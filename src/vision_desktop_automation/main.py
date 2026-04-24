@@ -46,7 +46,7 @@ DESKTOP_PATH = Path(os.path.expanduser("~")) / "Desktop"
 OUTPUT_DIR = DESKTOP_PATH / "tjm-project"
 
 # VLM settings
-GEMINI_API_KEY = "AIzaSyAM0WGerHwaN9sOzxn62xq4JDFBNnoN4-Y"
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 VLM_MODEL = "gemini-flash-latest"
 
