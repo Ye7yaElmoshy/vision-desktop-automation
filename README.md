@@ -213,11 +213,11 @@ The following screenshots are stored in `docs/screenshots/`.
 
 ### Bottom-left annotated detection 1
 
-![Bottom-left annotated detection 1](docs/screenshots/Bottom%20left%201%20ANNOTATED%20screenshot.jpeg)
+![Bottom-right annotated detection 1](docs/screenshots/Bottom%20left%201%20ANNOTATED%20screenshot.jpeg)
 
 ### Bottom-left annotated detection 2
 
-![Bottom-left annotated detection 2](docs/screenshots/Bottom%20left%202%20ANNOTATED%20screenshot.jpeg)
+![Bottom-right annotated detection 2](docs/screenshots/Bottom%20left%202%20ANNOTATED%20screenshot.jpeg)
 
 ### Bottom-right popup confirmation
 
