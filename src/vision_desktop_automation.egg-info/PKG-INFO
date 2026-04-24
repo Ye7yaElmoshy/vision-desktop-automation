@@ -1,0 +1,13 @@
+Metadata-Version: 2.4
+Name: vision-desktop-automation
+Version: 0.1.0
+Summary: Vision-based Windows desktop automation with planner-guided VLM grounding
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: opencv-python
+Requires-Dist: numpy
+Requires-Dist: pyautogui
+Requires-Dist: pyperclip
+Requires-Dist: requests
+Requires-Dist: pillow
+Requires-Dist: pygetwindow

@@ -1,0 +1,8 @@
+pyproject.toml
+src/vision_desktop_automation/__init__.py
+src/vision_desktop_automation.egg-info/PKG-INFO
+src/vision_desktop_automation.egg-info/SOURCES.txt
+src/vision_desktop_automation.egg-info/dependency_links.txt
+src/vision_desktop_automation.egg-info/entry_points.txt
+src/vision_desktop_automation.egg-info/requires.txt
+src/vision_desktop_automation.egg-info/top_level.txt

@@ -1,0 +1,32 @@
+# Secrets
+.env
+
+# Python / uv
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Runtime files
+automation.log
+screen.png
+unsaved_note_counter.txt
+
+# Generated screenshots
+failure_screenshots/*.png
+!failure_screenshots/.gitkeep
+
+# Optional local templates
+templates/*.png
+templates/*.jpg
+templates/*.jpeg
+!templates/.gitkeep
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db

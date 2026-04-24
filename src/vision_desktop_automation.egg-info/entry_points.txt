@@ -1,0 +1,2 @@
+[console_scripts]
+vision-automation = vision_desktop_automation.main:main

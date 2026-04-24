@@ -1,0 +1,21 @@
+[project]
+name = "vision-desktop-automation"
+version = "0.1.0"
+description = "Vision-based Windows desktop automation with planner-guided VLM grounding"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "opencv-python",
+    "numpy",
+    "pyautogui",
+    "pyperclip",
+    "requests",
+    "pillow",
+    "pygetwindow",
+]
+
+[project.scripts]
+vision-automation = "vision_desktop_automation.main:main"
+
+[tool.uv]
+package = true
