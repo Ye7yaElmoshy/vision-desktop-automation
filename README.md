@@ -197,31 +197,31 @@ The following screenshots are stored in `docs/screenshots/`.
 
 ### Top-left annotated detection
 
-![Top-left annotated detection](docs/screenshots/Top%20left%20ANNOTATED%20screenshot.png)
+![Top-left annotated detection](docs/screenshots/Top%20left%20ANNOTATED%20screenshot.jpeg)
 
 ### Top-left popup confirmation
 
-![Top-left popup confirmation](docs/screenshots/Top%20left%20POP-UP%20screenshot.png)
+![Top-left popup confirmation](docs/screenshots/Top%20left%20POP-UP%20screenshot.jpeg)
 
 ### Center annotated detection
 
-![Center annotated detection](docs/screenshots/Center%20ANNOTATED%20screenshot.png)
+![Center annotated detection](docs/screenshots/Center%20ANNOTATED%20screenshot.jpeg)
 
 ### Center popup confirmation
 
-![Center popup confirmation](docs/screenshots/Center%20POP-UP%20screenshot.png)
+![Center popup confirmation](docs/screenshots/Center%20POP-UP%20screenshot.jpeg)
 
 ### Bottom-left annotated detection 1
 
-![Bottom-left annotated detection 1](docs/screenshots/Bottom%20left%201%20ANNOTATED%20screenshot.png)
+![Bottom-left annotated detection 1](docs/screenshots/Bottom%20left%201%20ANNOTATED%20screenshot.jpeg)
 
 ### Bottom-left annotated detection 2
 
-![Bottom-left annotated detection 2](docs/screenshots/Bottom%20left%202%20ANNOTATED%20screenshot.png)
+![Bottom-left annotated detection 2](docs/screenshots/Bottom%20left%202%20ANNOTATED%20screenshot.jpeg)
 
 ### Bottom-right popup confirmation
 
-![Bottom-right popup confirmation](docs/screenshots/Bottom%20Right%20POP-UP%20screenshot.png)
+![Bottom-right popup confirmation](docs/screenshots/Bottom%20Right%20POP-UP%20screenshot.jpeg)
 
 ---
 
