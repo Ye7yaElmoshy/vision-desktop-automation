@@ -1,4 +1,4 @@
-Vision-Based Desktop Automation with Dynamic Icon Grounding
+###Vision-Based Desktop Automation with Dynamic Icon Grounding
 
 ## Objective
 
