@@ -262,33 +262,43 @@ Title: {title}
 
 ```text
 vision-desktop-automation/
-â
-âââ README.md
-âââ pyproject.toml
-âââ uv.lock
-âââ .gitignore
-âââ .env.example
-â
-âââ src/
-â   âââ vision_desktop_automation/
-â       âââ __init__.py
-â       âââ main.py
-â
-âââ docs/
-â   âââ screenshots/
-â       âââ Bottom left 1 ANNOTATED screenshot.png
-â       âââ Bottom left 2 ANNOTATED screenshot.png
-â       âââ Bottom Right POP-UP screenshot.png
-â       âââ Center ANNOTATED screenshot.png
-â       âââ Center POP-UP screenshot.png
-â       âââ Top left ANNOTATED screenshot.png
-â       âââ Top left POP-UP screenshot.png
-â
-âââ templates/
-â   âââ .gitkeep
-â
-âââ failure_screenshots/
-    âââ .gitkeep
+│
+├── src/
+│   └── vision_desktop_automation/
+│       ├── __init__.py
+│       ├── main.py
+│       ├── config.py
+│       ├── prompts.py
+│       ├── api.py
+│       ├── files.py
+│       ├── geometry.py
+│       ├── vlm_client.py
+│       ├── grounding.py
+│       ├── template_matching.py
+│       ├── desktop.py
+│       └── notepad.py
+│
+├── tests/
+│   ├── __init__.py
+│   ├── test_geometry.py
+│   ├── test_api.py
+│   └── test_files.py
+│
+├── templates/          ← OpenCV template images (already exists)
+│
+├── docs/
+│   ├── screenshots/    ← (already exists)
+│   └── REFACTOR_NOTES.md
+│
+├── logs/               ← runtime logs (gitignored)
+├── output/             ← post_{id}.txt files (gitignored)
+├── failure_screenshots/ ← (already exists, move to root only)
+│
+├── .env.example        ← GEMINI_API_KEY=your_key_here
+├── .gitignore
+├── pyproject.toml      ← replaces egg-info mess
+├── requirements.txt
+└── README.md
 ```
 
 ---
