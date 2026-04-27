@@ -30,6 +30,15 @@ from PIL import Image
 
 from vision_desktop_automation.template_matching import template_match_notepad_icon
 
+from vision_desktop_automation.files import (
+    ensure_runtime_dirs,
+    get_next_unsaved_note_number,
+    save_annotated_screenshot,
+    save_debug_screenshot,
+    setup_logging,
+    verify_outputs,
+)
+
 from vision_desktop_automation.vlm_client import (
     call_gemini_vision,
     parse_vlm_json,
@@ -114,83 +123,6 @@ pyautogui.PAUSE = 0.15
 
 
 
-# =========================
-# UNSAVED NOTE COUNTER
-# =========================
-def get_next_unsaved_note_number() -> int:
-    try:
-        if UNSAVED_NOTE_COUNTER_FILE.exists():
-            n = int(UNSAVED_NOTE_COUNTER_FILE.read_text().strip())
-        else:
-            n = 0
-        n += 1
-        UNSAVED_NOTE_COUNTER_FILE.write_text(str(n))
-        return n
-    except Exception:
-        return int(time.time())
-
-
-# =========================
-# LOGGING
-# =========================
-def setup_logging():
-    handlers = [logging.StreamHandler(sys.stdout)]
-    try:
-        handlers.append(logging.FileHandler(LOG_FILE, encoding="utf-8"))
-    except PermissionError:
-        fallback = Path(f"automation_{int(time.time())}.log")
-        handlers.append(logging.FileHandler(fallback, encoding="utf-8"))
-        print(f"WARNING: {LOG_FILE} locked, logging to {fallback}")
-
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s | %(levelname)s | %(message)s",
-        handlers=handlers,
-    )
-
-
-# =========================
-# FILESYSTEM HELPERS
-# =========================
-def ensure_runtime_dirs():
-    FAILURE_SCREENSHOT_DIR.mkdir(exist_ok=True)
-    try:
-        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-        logging.info(f"Output directory: {OUTPUT_DIR}")
-    except Exception as e:
-        raise RuntimeError(f"Cannot create output directory {OUTPUT_DIR}: {e}")
-
-
-def save_debug_screenshot(label: str):
-    try:
-        timestamp = time.strftime("%Y%m%d_%H%M%S")
-        path = FAILURE_SCREENSHOT_DIR / f"{label}_{timestamp}.png"
-        pyautogui.screenshot().save(path)
-        logging.info(f"Saved debug screenshot: {path}")
-    except Exception as e:
-        logging.warning(f"Could not save debug screenshot: {e}")
-
-
-def save_annotated_screenshot(label: str, click_x: int, click_y: int):
-    try:
-        timestamp = time.strftime("%Y%m%d_%H%M%S")
-        path = FAILURE_SCREENSHOT_DIR / f"annotated_{label}_{timestamp}.png"
-        img = cv2.cvtColor(np.array(pyautogui.screenshot()), cv2.COLOR_RGB2BGR)
-        cv2.circle(img, (click_x, click_y), 20, (0, 255, 0), 3)
-        cv2.circle(img, (click_x, click_y), 5, (0, 255, 0), -1)
-        cv2.putText(
-            img,
-            f"Detected: ({click_x}, {click_y})",
-            (max(0, click_x - 150), max(30, click_y - 25)),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.8,
-            (0, 255, 0),
-            2,
-        )
-        cv2.imwrite(str(path), img)
-        logging.info(f"Saved annotated screenshot: {path}")
-    except Exception as e:
-        logging.warning(f"Could not save annotated screenshot: {e}")
 
 
 # =========================
@@ -999,49 +931,48 @@ def open_notepad():
 
                 detection_method = "planner_guided_vlm"
 
-try:
-    x_shot, y_shot, confidence = planner_guided_ground_icon(
-        pil_image,
-        TARGET_DESCRIPTION,
-    )
-except Exception as vlm_error:
-    logging.warning(f"Planner-guided VLM grounding failed: {vlm_error}")
+                try:
+                    x_shot, y_shot, confidence = planner_guided_ground_icon(
+                        pil_image,
+                        TARGET_DESCRIPTION,
+                    )
+                except Exception as vlm_error:
+                    logging.warning(f"Planner-guided VLM grounding failed: {vlm_error}")
 
-    if not USE_TEMPLATE_MATCHING_FALLBACK:
-        raise
+                    if not USE_TEMPLATE_MATCHING_FALLBACK:
+                        raise
 
-    logging.info("Trying local template-matching fallback...")
-    template_result = template_match_notepad_icon(pil_image)
+                    logging.info("Trying local template-matching fallback...")
+                    template_result = template_match_notepad_icon(pil_image)
 
-    if template_result is None:
-        raise RuntimeError(
-            f"VLM grounding failed and template fallback found no reliable match. "
-            f"Original VLM error: {vlm_error}"
-        )
+                    if template_result is None:
+                        raise RuntimeError(
+                            f"VLM grounding failed and template fallback found no reliable match. "
+                            f"Original VLM error: {vlm_error}"
+                        )
 
-    x_shot, y_shot, confidence = template_result
-    detection_method = "template_matching_fallback"
+                    x_shot, y_shot, confidence = template_result
+                    detection_method = "template_matching_fallback"
 
-    logging.info(
-        f"Template fallback selected Notepad candidate at "
-        f"({x_shot},{y_shot}) with score={confidence:.3f}"
-    )
+                    logging.info(
+                        f"Template fallback selected Notepad candidate at "
+                        f"({x_shot},{y_shot}) with score={confidence:.3f}"
+                    )
 
-if detection_method == "template_matching_fallback":
-    logging.info(
-        "Skipping VLM verifier for template fallback; "
-        "Notepad launch validation will confirm result"
-    )
-elif confidence < VERIFICATION_SKIP_CONFIDENCE:
-    if not verify_icon_identity(
-        pil_image,
-        x_shot / pil_image.width,
-        y_shot / pil_image.height,
-    ):
-        raise ValueError("Wrong icon detected after planner-guided grounding")
-else:
-    logging.info("Skipping outer icon verification due high grounding confidence")
-
+                if detection_method == "template_matching_fallback":
+                    logging.info(
+                        "Skipping VLM verifier for template fallback; "
+                        "Notepad launch validation will confirm result"
+                    )
+                elif confidence < VERIFICATION_SKIP_CONFIDENCE:
+                    if not verify_icon_identity(
+                        pil_image,
+                        x_shot / pil_image.width,
+                        y_shot / pil_image.height,
+                    ):
+                        raise ValueError("Wrong icon detected after planner-guided grounding")
+                else:
+                    logging.info("Skipping outer icon verification due high grounding confidence")
                 x = int(x_shot * scale_x)
                 y = int(y_shot * scale_y)
                 logging.info(f"Grounded: shot=({x_shot},{y_shot}) → screen=({x},{y})")
@@ -1212,7 +1143,6 @@ def process_post(post: dict[str, Any]):
     close_notepad()
     logging.info(f"Finished post {post['id']}")
 
-
 # =========================
 # API
 # =========================
@@ -1223,41 +1153,6 @@ def validate_environment():
             "GEMINI_API_KEY is not set. Set it as an environment variable before running."
         )
     logging.info("Environment validated")
-
-
-def verify_outputs(posts: list[dict[str, Any]]) -> bool:
-    logging.info("=" * 60)
-    logging.info("Verifying files")
-    all_ok = True
-
-    for post in posts:
-        filepath = OUTPUT_DIR / f"post_{post['id']}.txt"
-        expected = f"Title: {post['title']}"
-
-        if not filepath.exists():
-            logging.error(f"MISSING: {filepath.name}")
-            all_ok = False
-            continue
-
-        if filepath.stat().st_size == 0:
-            logging.error(f"EMPTY: {filepath.name}")
-            all_ok = False
-            continue
-
-        content = filepath.read_text(encoding="utf-8", errors="replace")
-        if expected in content:
-            logging.info(f"OK: post_{post['id']}.txt")
-        else:
-            logging.error(f"WRONG CONTENT: post_{post['id']}.txt")
-            all_ok = False
-
-    if all_ok:
-        logging.info("All files verified successfully")
-    else:
-        logging.warning("Some files failed — re-run the script")
-
-    return all_ok
-
 
 # =========================
 # MAIN
