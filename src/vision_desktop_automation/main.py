@@ -32,6 +32,14 @@ import pyperclip
 import requests
 from PIL import Image
 
+from vision_desktop_automation.api import fetch_posts
+from vision_desktop_automation.geometry import (
+    box_iou,
+    describe_screen_region,
+    expand_region_pixels,
+    normalize_pct,
+)
+
 from vision_desktop_automation.prompts import (
     CACHE_CHECK_PROMPT,
     GROUNDING_PROMPT,
@@ -362,50 +370,6 @@ def recover_planner_regions_from_text(text: str) -> dict[str, Any]:
     return {"candidate_regions": valid_regions}
 
 
-# =========================
-# PLANNER-GUIDED CANDIDATE REGIONS
-# =========================
-def normalize_pct(value: Any, default: float) -> float:
-    try:
-        v = float(value)
-        if v > 1.0:
-            v = v / 100.0
-        return max(0.0, min(1.0, v))
-    except Exception:
-        return default
-
-
-def expand_region_pixels(
-    px1: int,
-    py1: int,
-    px2: int,
-    py2: int,
-    img_w: int,
-    img_h: int,
-    min_w: int = MIN_REGION_WIDTH_PX,
-    min_h: int = MIN_REGION_HEIGHT_PX,
-    pad: int = 80,
-) -> tuple[int, int, int, int]:
-    """
-    Expand tight planner regions instead of rejecting them.
-
-    Gemini often returns a tight box around the icon. For grounding, a slightly
-    larger crop is better because it preserves the icon, label, and surrounding
-    context. This also helps across small, medium, and large Windows icon sizes.
-    """
-    cx = (px1 + px2) // 2
-    cy = (py1 + py2) // 2
-
-    target_w = max(px2 - px1, min_w) + 2 * pad
-    target_h = max(py2 - py1, min_h) + 2 * pad
-
-    new_px1 = max(0, cx - target_w // 2)
-    new_py1 = max(0, cy - target_h // 2)
-    new_px2 = min(img_w, cx + target_w // 2)
-    new_py2 = min(img_h, cy + target_h // 2)
-
-    return new_px1, new_py1, new_px2, new_py2
-
 
 def propose_candidate_regions(screenshot: Image.Image, target_description: str) -> list[dict[str, Any]]:
     prompt = PLANNER_PROMPT.format(
@@ -508,19 +472,6 @@ def propose_candidate_regions(screenshot: Image.Image, target_description: str) 
 def crop_region(screenshot: Image.Image, region: dict[str, Any]) -> Image.Image:
     return screenshot.crop((region["px1"], region["py1"], region["px2"], region["py2"]))
 
-
-def box_area(box: dict[str, float]) -> float:
-    return max(0.0, box["x2"] - box["x1"]) * max(0.0, box["y2"] - box["y1"])
-
-
-def box_iou(a: dict[str, float], b: dict[str, float]) -> float:
-    ix1 = max(a["x1"], b["x1"])
-    iy1 = max(a["y1"], b["y1"])
-    ix2 = min(a["x2"], b["x2"])
-    iy2 = min(a["y2"], b["y2"])
-    inter = box_area({"x1": ix1, "y1": iy1, "x2": ix2, "y2": iy2})
-    union = box_area(a) + box_area(b) - inter
-    return inter / union if union > 0 else 0.0
 
 
 def nms_regions(regions: list[dict[str, Any]], iou_threshold: float = REGION_NMS_IOU_THRESHOLD) -> list[dict[str, Any]]:
@@ -899,9 +850,6 @@ _icon_cache: dict[str, Any] = {
     "reference_crop": None,
 }
 
-_first_detection_popup_shown = False
-
-
 def get_dpi_scale() -> tuple[float, float]:
     screen_w, screen_h = pyautogui.size()
     shot = pyautogui.screenshot()
@@ -984,49 +932,6 @@ def invalidate_icon_cache():
     _icon_cache["y"] = None
     _icon_cache["reference_crop"] = None
 
-
-def describe_screen_region(x: int, y: int, screen_w: int, screen_h: int) -> str:
-    """Convert screen coordinates into a human-readable location for reporting."""
-    horizontal = "left" if x < screen_w / 3 else "right" if x > (2 * screen_w) / 3 else "center"
-    vertical = "top" if y < screen_h / 3 else "bottom" if y > (2 * screen_h) / 3 else "middle"
-
-    if horizontal == "center" and vertical == "middle":
-        return "center of the screen"
-    if horizontal == "center":
-        return f"{vertical} center"
-    if vertical == "middle":
-        return f"middle {horizontal}"
-    return f"{vertical} {horizontal}"
-
-
-def show_first_detection_popup(x: int, y: int, confidence: float):
-    """
-    Show a one-time popup after Notepad is visually found.
-    This is useful for taking a screenshot for the report.
-    """
-    global _first_detection_popup_shown
-
-    if _first_detection_popup_shown:
-        return
-
-    screen_w, screen_h = pyautogui.size()
-    location = describe_screen_region(x, y, screen_w, screen_h)
-
-    message = (
-        "Notepad found by planner-guided VLM grounding."
-        f"Location: {location}"
-        f"Coordinates: x={x}, y={y}"
-        f"Screen size: {screen_w} x {screen_h}"
-        f"Confidence: {confidence:.2f}"
-        "Take your screenshot now, then press OK to continue."
-    )
-
-    logging.info(
-        f"Showing first-detection popup: location={location}, "
-        f"coords=({x},{y}), confidence={confidence:.2f}"
-    )
-    pyautogui.alert(text=message, title="Notepad Detected", button="OK")
-    _first_detection_popup_shown = True
 
 
 # =========================
@@ -1281,7 +1186,6 @@ def open_notepad():
                 y = int(y_shot * scale_y)
                 logging.info(f"Grounded: shot=({x_shot},{y_shot}) → screen=({x},{y})")
                 save_annotated_screenshot(f"attempt_{attempt}", x, y)
-                show_first_detection_popup(x, y, confidence)
 
                 _icon_cache["x"] = x
                 _icon_cache["y"] = y
@@ -1452,22 +1356,6 @@ def process_post(post: dict[str, Any]):
 # =========================
 # API
 # =========================
-def fetch_posts():
-    logging.info("Fetching posts")
-    response = requests.get(API_URL, timeout=10)
-    response.raise_for_status()
-    posts = response.json()[:POST_LIMIT]
-
-    if not isinstance(posts, list) or not posts:
-        raise ValueError("API returned invalid data")
-
-    for post in posts:
-        if not all(k in post for k in ("id", "title", "body")):
-            raise ValueError("Post missing required keys")
-
-    logging.info(f"Fetched {len(posts)} posts")
-    return posts
-
 
 def validate_environment():
     if not GEMINI_API_KEY:
