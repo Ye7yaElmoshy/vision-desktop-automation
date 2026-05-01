@@ -64,11 +64,39 @@ def ensure_notepad_focused():
         raise RuntimeError("Notepad window lost")
 
     try:
-        w = windows[0]
+        sane_windows = []
+
+        for idx, w in enumerate(windows):
+            left = int(getattr(w, "left", 0))
+            top = int(getattr(w, "top", 0))
+            width = int(getattr(w, "width", 0))
+            height = int(getattr(w, "height", 0))
+            title = str(getattr(w, "title", ""))
+
+            logging.info(
+                f"Notepad window #{idx}: title='{title}', "
+                f"left={left}, top={top}, width={width}, height={height}"
+            )
+
+            if width <= 100 or height <= 100:
+                continue
+
+            if left < -1000 or top < -1000:
+                continue
+
+            sane_windows.append(w)
+
+        if not sane_windows:
+            raise RuntimeError("No visible sane Notepad window found")
+
+        w = sane_windows[0]
         w.activate()
-        time.sleep(0.3)
-        pyautogui.click(w.left + w.width // 2, w.top + w.height // 2)
-        time.sleep(0.2)
+        time.sleep(0.5)
+
+        # Do not click window coordinates here.
+        # Clicking raw pygetwindow coordinates can move the cursor to a fail-safe corner.
+        logging.info("Notepad activated without mouse-center click")
+
     except Exception as e:
         raise RuntimeError(f"Could not focus Notepad: {e}")
 

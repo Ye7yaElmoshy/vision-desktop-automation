@@ -36,6 +36,23 @@ def get_active_window_title() -> str:
     except Exception:
         return ""
 
+def move_mouse_to_safe_position() -> None:
+    """
+    Move the mouse away from PyAutoGUI fail-safe corners.
+
+    Fail-safe remains enabled globally. It is disabled only during this recovery
+    move because PyAutoGUI may refuse to move if the cursor is already inside
+    a fail-safe corner.
+    """
+    original_failsafe = pyautogui.FAILSAFE
+
+    try:
+        pyautogui.FAILSAFE = False
+        screen_w, screen_h = pyautogui.size()
+        pyautogui.moveTo(screen_w // 2, screen_h // 2, duration=0.1)
+        time.sleep(0.1)
+    finally:
+        pyautogui.FAILSAFE = original_failsafe
 
 def get_dpi_scale() -> tuple[float, float]:
     global _dpi_scale_cache
@@ -118,11 +135,11 @@ def icon_still_at_cached_location(
             return True
 
         if diff < CACHE_TOLERANT_DIFF_THRESHOLD:
-            logging.info(
-                f"Cache accepted by tolerant local threshold, diff={diff:.1f}. "
-                "Launch validation will confirm result."
+            logging.warning(
+                f"Cache diff is suspicious, diff={diff:.1f}. "
+                "Invalidating cache and forcing re-grounding."
             )
-            return True
+            return False
 
         if USE_VLM_CACHE_CONFIRMATION:
             logging.info(f"Cache diff {diff:.1f} high — confirming with VLM")
