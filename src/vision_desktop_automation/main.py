@@ -128,6 +128,15 @@ def main() -> None:
             except Exception:
                 pass
 
+    # Final cleanup — `close_all_notepad_windows` is normally invoked at the
+    # start of the next iteration's `open_notepad`, but the last post has no
+    # next iteration, so any leftover Notepad would be left running.
+    try:
+        from vision_desktop_automation.notepad import close_all_notepad_windows
+        close_all_notepad_windows()
+    except Exception as e:
+        logging.warning(f"Final Notepad cleanup failed: {e}")
+
     logging.info("=" * 60)
 
     if failed_posts:

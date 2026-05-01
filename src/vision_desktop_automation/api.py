@@ -4,11 +4,16 @@ from typing import Any
 
 import requests
 
-from vision_desktop_automation.config import API_RETRIES, API_URL, POST_LIMIT
+from vision_desktop_automation.config import API_RETRIES, API_URL
+import vision_desktop_automation.config as cfg
 
 
 def fetch_posts() -> list[dict[str, Any]]:
-    """Fetch and validate the first POST_LIMIT posts from JSONPlaceholder."""
+    """Fetch and validate the first POST_LIMIT posts from JSONPlaceholder.
+
+    Reads cfg.POST_LIMIT dynamically so CLI overrides applied in main.py
+    are respected.
+    """
     logging.info("Fetching posts")
 
     last_error: Any = None
@@ -18,7 +23,7 @@ def fetch_posts() -> list[dict[str, Any]]:
             response = requests.get(API_URL, timeout=10)
             response.raise_for_status()
 
-            posts = response.json()[:POST_LIMIT]
+            posts = response.json()[:cfg.POST_LIMIT]
 
             if not isinstance(posts, list) or not posts:
                 raise ValueError("API returned invalid data")

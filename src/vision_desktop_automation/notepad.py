@@ -11,10 +11,8 @@ from vision_desktop_automation.config import (
     AFTER_SAVE_WAIT,
     ICON_DETECTION_RETRIES,
     NOTEPAD_OPEN_WAIT_MAX,
-    OUTPUT_DIR,
     PASTE_WAIT,
     POST_ENTER_WAIT,
-    POST_LIMIT,
     SAVE_DIALOG_WAIT,
     SAVE_RETRIES,
     SCREENSHOT_PATH,
@@ -22,6 +20,7 @@ from vision_desktop_automation.config import (
     USE_TEMPLATE_MATCHING_FALLBACK,
     VERIFICATION_SKIP_CONFIDENCE,
 )
+import vision_desktop_automation.config as cfg
 
 from vision_desktop_automation.desktop import (
     ensure_desktop_clear,
@@ -175,7 +174,7 @@ def close_all_notepad_windows():
                 continue
 
             note_num = get_next_unsaved_note_number()
-            save_path = str(OUTPUT_DIR / f"unsaved_note_{note_num}.txt")
+            save_path = str(cfg.OUTPUT_DIR / f"unsaved_note_{note_num}.txt")
             logging.info(f"Saving leftover as: unsaved_note_{note_num}.txt")
 
             save_notepad_as(save_path)
@@ -205,6 +204,12 @@ def close_all_notepad_windows():
 
 def dismiss_unexpected_window(title: str):
     if not title.strip():
+        return
+
+    # Never Alt+F4 the desktop itself — that triggers the Windows Shutdown dialog.
+    # If the click missed the icon, focus may land on Program Manager (the desktop).
+    if title.lower().strip() in {"program manager", "desktop"}:
+        logging.info("Active window is the desktop itself — no dismissal needed (skipping Alt+F4)")
         return
 
     logging.info(f"Dismissing unexpected window: '{title}'")
@@ -403,7 +408,7 @@ def wait_for_save_dialog(timeout: int = 5) -> bool:
 
 def save_file(post_id: int):
     filename = f"post_{post_id}.txt"
-    full_path = str(OUTPUT_DIR / filename)
+    full_path = str(cfg.OUTPUT_DIR / filename)
     last_error = None
 
     for attempt in range(1, SAVE_RETRIES + 1):
@@ -458,37 +463,51 @@ def save_file(post_id: int):
 
 
 def close_notepad():
+    """
+    Close the current Notepad window using Ctrl+W.
+
+    Ctrl+W is preferred over Alt+F4 because:
+    - Notepad treats it as 'close document' rather than 'kill window'
+    - It cannot accidentally trigger the Windows Shutdown dialog
+      if focus shifts to the desktop mid-call
+    - Works consistently across Windows 10 (classic Notepad) and
+      Windows 11 (tabbed Notepad)
+    """
     logging.info("Closing Notepad")
     windows = get_notepad_windows()
     if windows:
         try:
             windows[0].activate()
-            time.sleep(0.2)
+            time.sleep(0.5)
+            # Click on title bar to ensure window has keyboard focus
+            w = windows[0]
+            pyautogui.click(w.left + w.width // 2, w.top + 15)
+            time.sleep(0.3)
         except Exception:
             pass
 
-    pyautogui.hotkey("alt", "F4")
+    pyautogui.hotkey("ctrl", "w")
     time.sleep(AFTER_CLOSE_WAIT)
 
     if get_notepad_windows():
-        logging.warning("Notepad still open after Alt+F4 — checking for save dialog")
         active = get_active_window_title()
-        if any(k in active for k in ["Save", "save", "changes", "Confirm"]):
-            logging.info(f"Save dialog: '{active}' — discarding with Tab+Enter")
+        if any(k in active for k in ["Save", "save", "changes", "Confirm", "Notepad"]):
+            logging.info(f"Save/confirm dialog: '{active}' — discarding with Tab+Enter")
             pyautogui.press("tab")
             time.sleep(0.2)
             pyautogui.press("enter")
             time.sleep(0.5)
 
+        # Second attempt if still open
         if get_notepad_windows():
-            logging.warning("Notepad still open — sending second Alt+F4")
-            pyautogui.hotkey("alt", "F4")
+            logging.warning("Notepad still open after Ctrl+W — sending second Ctrl+W")
+            pyautogui.hotkey("ctrl", "w")
             time.sleep(0.5)
 
 
 def process_post(post: dict[str, Any]):
     logging.info("=" * 60)
-    logging.info(f"Processing post {post['id']} / {POST_LIMIT}")
+    logging.info(f"Processing post {post['id']} / {cfg.POST_LIMIT}")
     open_notepad()
     paste_post_content(post)
     save_file(post["id"])
