@@ -6,6 +6,7 @@ from pathlib import Path
 # =========================
 SCREENSHOT_PATH = Path("screen.png")
 FAILURE_SCREENSHOT_DIR = Path("failure_screenshots")
+ANNOTATED_SCREENSHOT_DIR = Path("annotated_screenshots")
 LOG_FILE = Path("automation.log")
 UNSAVED_NOTE_COUNTER_FILE = Path("unsaved_note_counter.txt")
 TEMPLATE_DIR = Path("templates")
@@ -49,6 +50,10 @@ RECURSIVE_PLANNER_DEPTH = 2
 
 MIN_PLANNER_REGION_SCORE = 0.50
 
+# If the top two grounder proposals are within this score margin, run a
+# verifier-based disambiguation pass instead of blindly picking the highest score.
+DISAMBIGUATION_MARGIN = 0.10
+
 # You said you fixed this, so keep it True.
 ALLOW_DIRECT_GROUNDING_FALLBACK = True
 
@@ -62,7 +67,7 @@ VERIFICATION_SKIP_REGION_SCORE = 0.90
 USE_TEMPLATE_MATCHING_FALLBACK = True
 TEMPLATE_MATCH_THRESHOLD = 0.82
 TEMPLATE_MATCH_SCALES = [0.70, 0.80, 0.90, 1.00, 1.10, 1.20, 1.35, 1.50]
-TEMPLATE_FILE_PATTERNS = ["notepad*.png", "notepad*.jpg", "notepad*.jpeg"]
+TEMPLATE_FILE_PATTERNS = ["*.png", "*.jpg", "*.jpeg"]
 
 # =========================
 # CACHE SETTINGS
@@ -74,7 +79,12 @@ USE_VLM_CACHE_CONFIRMATION = False
 # =========================
 # TARGET
 # =========================
-TARGET_DESCRIPTION = "Notepad desktop shortcut icon"
+TARGET_DESCRIPTION = (
+    "Notepad desktop shortcut icon. "
+    "Label: 'Notepad'. "
+    "Appearance: simple document shape with horizontal lines. "
+    "Exclude: Notepad++, Notes, WordPad, VS Code, browsers, text documents."
+)
 
 # =========================
 # API

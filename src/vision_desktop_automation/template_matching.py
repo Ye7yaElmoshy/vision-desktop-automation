@@ -36,13 +36,15 @@ def load_template_images() -> list[tuple[str, np.ndarray]]:
     return templates
 
 
-def template_match_notepad_icon(screenshot: Image.Image) -> tuple[int, int, float] | None:
+def template_match_icon(screenshot: Image.Image) -> tuple[int, int, float] | None:
     """
-    Local OpenCV fallback for locating the Notepad desktop shortcut.
+    Local OpenCV fallback for locating a target desktop icon.
 
-    This is not the primary method. It is a graceful-degradation fallback for
-    cases where Gemini is unavailable, returns 503, or produces unusable JSON.
-    It performs grayscale multi-scale template matching.
+    Used as a graceful-degradation fallback when the VLM grounder is unavailable
+    (network error, 5xx, malformed JSON). Loads every image in TEMPLATE_DIR and
+    performs grayscale, multi-scale (TEMPLATE_MATCH_SCALES) normalized correlation
+    matching to handle small/medium/large Windows icon size settings.
+    Returns (x, y, score) for the best match if it clears TEMPLATE_MATCH_THRESHOLD.
     """
     templates = load_template_images()
 

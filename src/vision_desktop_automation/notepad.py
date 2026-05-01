@@ -5,7 +5,6 @@ from typing import Any
 
 import pyautogui
 import pyperclip
-from PIL import Image
 
 from vision_desktop_automation.config import (
     AFTER_CLOSE_WAIT,
@@ -47,7 +46,7 @@ from vision_desktop_automation.grounding import (
     verify_icon_identity,
 )
 
-from vision_desktop_automation.template_matching import template_match_notepad_icon
+from vision_desktop_automation.template_matching import template_match_icon
 
 def get_notepad_windows():
     try:
@@ -75,13 +74,16 @@ def ensure_notepad_focused():
 
 
 def save_notepad_as(save_path: str):
+    # Ctrl+Shift+S works on Windows 11 Notepad; fall back to Alt+F, A for Windows 10
     pyautogui.hotkey("ctrl", "shift", "s")
-    time.sleep(2.0)
+    time.sleep(1.5)
 
     title = get_active_window_title()
-    if "Notepad" in title and "Save" not in title:
-        pyautogui.hotkey("ctrl", "s")
-        time.sleep(2.0)
+    if "Save" not in title:
+        pyautogui.hotkey("alt", "f")
+        time.sleep(0.5)
+        pyautogui.press("a")
+        time.sleep(1.5)
 
     pyperclip.copy(save_path)
     time.sleep(0.2)
@@ -217,7 +219,7 @@ def open_notepad():
             if cached_position is not None:
                 x, y = cached_position
                 logging.info(f"Checking icon cache: ({x}, {y})")
-                if not icon_still_at_cached_location(x, y, scale_x, scale_y):
+                if not icon_still_at_cached_location(x, y, scale_x, scale_y, TARGET_DESCRIPTION):
                     logging.warning("Icon moved or changed — invalidating cache")
                     invalidate_icon_cache()
                     raise RuntimeError("Cache invalidated")
@@ -226,9 +228,8 @@ def open_notepad():
                 ensure_desktop_clear()
                 time.sleep(0.5)
 
-                screenshot = pyautogui.screenshot()
-                screenshot.save(SCREENSHOT_PATH)
-                pil_image = Image.open(SCREENSHOT_PATH)
+                pil_image = pyautogui.screenshot()
+                pil_image.save(SCREENSHOT_PATH)
 
                 detection_method = "planner_guided_vlm"
 
@@ -244,7 +245,7 @@ def open_notepad():
                         raise
 
                     logging.info("Trying local template-matching fallback...")
-                    template_result = template_match_notepad_icon(pil_image)
+                    template_result = template_match_icon(pil_image)
 
                     if template_result is None:
                         raise RuntimeError(
@@ -256,20 +257,21 @@ def open_notepad():
                     detection_method = "template_matching_fallback"
 
                     logging.info(
-                        f"Template fallback selected Notepad candidate at "
+                        f"Template fallback selected candidate at "
                         f"({x_shot},{y_shot}) with score={confidence:.3f}"
                     )
 
                 if detection_method == "template_matching_fallback":
                     logging.info(
                         "Skipping VLM verifier for template fallback; "
-                        "Notepad launch validation will confirm result"
+                        "launch validation will confirm result"
                     )
                 elif confidence < VERIFICATION_SKIP_CONFIDENCE:
                     if not verify_icon_identity(
                         pil_image,
                         x_shot / pil_image.width,
                         y_shot / pil_image.height,
+                        TARGET_DESCRIPTION,
                     ):
                         raise ValueError("Wrong icon detected after planner-guided grounding")
                 else:
@@ -277,7 +279,7 @@ def open_notepad():
                 x = int(x_shot * scale_x)
                 y = int(y_shot * scale_y)
                 logging.info(f"Grounded: shot=({x_shot},{y_shot}) → screen=({x},{y})")
-                save_annotated_screenshot(f"attempt_{attempt}", x, y)
+                save_annotated_screenshot(f"attempt_{attempt}", x, y, pil_image)
 
                 update_icon_cache(x, y, scale_x, scale_y)
 
@@ -339,7 +341,7 @@ def wait_for_save_dialog(timeout: int = 5) -> bool:
     for _ in range(timeout * 2):
         time.sleep(0.5)
         title = get_active_window_title()
-        if "Save As" in title or ("Notepad" not in title and title.strip()):
+        if "Save As" in title or "Save as" in title:
             logging.info(f"Save dialog detected: '{title}'")
             return True
     logging.warning("Save dialog did not appear")
@@ -412,11 +414,11 @@ def close_notepad():
         except Exception:
             pass
 
-    pyautogui.hotkey("ctrl", "w")
+    pyautogui.hotkey("alt", "F4")
     time.sleep(AFTER_CLOSE_WAIT)
 
     if get_notepad_windows():
-        logging.warning("Notepad still open after Ctrl+W — checking for dialog")
+        logging.warning("Notepad still open after Alt+F4 — checking for save dialog")
         active = get_active_window_title()
         if any(k in active for k in ["Save", "save", "changes", "Confirm"]):
             logging.info(f"Save dialog: '{active}' — discarding with Tab+Enter")
@@ -426,7 +428,7 @@ def close_notepad():
             time.sleep(0.5)
 
         if get_notepad_windows():
-            logging.warning("Force closing with Alt+F4")
+            logging.warning("Notepad still open — sending second Alt+F4")
             pyautogui.hotkey("alt", "F4")
             time.sleep(0.5)
 

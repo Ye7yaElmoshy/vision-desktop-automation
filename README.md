@@ -10,6 +10,43 @@ The assignment intentionally uses a vision-heavy approach even though Notepad co
 
 ---
 
+## Architecture Overview
+
+```mermaid
+flowchart TD
+    A[Screenshot Capture] --> B{Icon Cache Valid?}
+    B -->|Yes, pixel diff low| C[Use Cached Position]
+    B -->|No or first run| D[Planner: Propose Candidate Regions]
+    D --> E[For each region: Crop image]
+    E --> F[Grounder: Locate icon in crop]
+    F --> G{Confidence high enough?}
+    G -->|Yes| H[Verifier: Confirm icon identity]
+    G -->|No, depth < max| I[Recursive: Re-plan inside crop]
+    I --> E
+    H --> J{Verified?}
+    J -->|Yes| K[Combined Score: region + grounding + box]
+    J -->|No| L[Reject candidate]
+    K --> M[Best candidate selected]
+    M --> N[Update icon cache]
+    N --> O[Double-click target]
+
+    F -.VLM error.-> P[Template Matching Fallback]
+    P --> Q{Score >= threshold?}
+    Q -->|Yes| O
+    Q -->|No| R[Raise: detection failed]
+
+    C --> O
+
+    style D fill:#e1f5ff
+    style F fill:#fff4e1
+    style H fill:#e1ffe1
+    style P fill:#ffe1e1
+```
+
+**Architecture overview:** The system uses a hierarchical Planner → Grounder → Verifier pipeline (inspired by ScreenSeekeR, [arxiv 2504.07981](https://arxiv.org/pdf/2504.07981)), with template matching as a graceful-degradation fallback when the VLM is unavailable.
+
+---
+
 ## Features
 
 - Planner-guided VLM grounding using Gemini Vision.
@@ -121,24 +158,31 @@ This makes the system more flexible than hardcoded coordinates or simple templat
 
 ---
 
-## Why Planner-Guided Grounding?
+## Why This Approach — ScreenSeekeR Inspiration
 
-Hardcoded coordinates fail when the icon moves.
+This implementation is inspired by **ScreenSeekeR** ([arxiv 2504.07981](https://arxiv.org/pdf/2504.07981)), which proposes hierarchical visual grounding for GUI elements.
 
-Template matching can fail when:
+**Architecture summary:** The pipeline runs three stages — *Planner* (proposes candidate regions on the full screenshot) → *Grounder* (returns box + click point inside each cropped region) → *Verifier* (confirms the icon identity on a tight crop). The Planner→Grounder step recurses if confidence is below threshold, and a combined score across planner score, grounder confidence, and proposal score picks the final candidate.
 
-- The icon size changes.
-- The Windows theme changes.
-- The desktop background is busy.
-- The shortcut label changes.
-- The icon is slightly different across Windows versions.
+### What we adopted from the paper
 
-The VLM-based planner-grounder approach is more general because it can reason about both:
+- **Planner → Grounder → Verifier pipeline** matching the paper's three-stage architecture.
+- **Hierarchical region search** — the paper's "coarse-to-fine localization": narrow the search area before grounding, instead of asking the VLM to click directly from a 1920×1080 image.
+- **Recursive refinement** when grounder confidence is below threshold — the planner is re-invoked on the current crop to produce sub-regions, and the search continues with reduced visual scope.
+- **Combined scoring across multiple signals** — `combined_score = w₁·grounder_confidence + w₂·planner_region_score + w₃·proposal_score` (where `proposal_score` itself fuses confidence, label_match, and visual_match). This is more robust than ranking by a single confidence number.
 
-- The icon appearance.
-- The text label.
+### Where we diverged and why
 
-This makes the solution closer to a general GUI grounding system rather than a task-specific Notepad launcher.
+- **Local OpenCV template matching as a third fallback layer.** The paper assumes the VLM is always reachable; in practice Gemini returns 5xx/timeouts often enough that a fully offline path matters for a deterministic interview demo.
+- **Icon position cache with pixel-diff validation.** The paper doesn't address temporal reuse — but in our workflow the same icon is clicked 10× in a row, so a verified cached coordinate skips the entire VLM cascade for posts 2–10. Pixel-diff against a stored reference crop catches stale-cache cases.
+- **Gemini Flash instead of larger models.** A larger VLM would likely improve single-call accuracy; Flash was chosen for cost and latency, with the planner-grounder hierarchy compensating for the smaller model's weaker direct grounding.
+- **Partial JSON recovery for VLM output errors.** Production hardening — the VLM occasionally emits markdown fences or truncated JSON; a regex-based field extractor recovers the click coordinates rather than failing the whole call.
+
+### Why hierarchical beats flat grounding
+
+- A single VLM call asking "where is icon X?" on a 1920×1080 desktop is unreliable for small icons — the icon may occupy <0.5% of the image area, and the model's spatial precision degrades with image size.
+- Splitting into regions reduces visual complexity per call: each grounder call sees ~10% of the desktop, where the icon is a much larger fraction of the view.
+- Recursion handles cases where the planner's first split was wrong — instead of failing, the system re-plans within the current crop and tries again. This is what makes the system tolerant of unexpected pop-ups, shifted icons, and cluttered desktops without prior knowledge of what the desktop looks like.
 
 ---
 

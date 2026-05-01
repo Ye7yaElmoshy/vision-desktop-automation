@@ -2,7 +2,7 @@ PLANNER_PROMPT = """You are a GUI search planner.
 
 Target: {target_description}
 
-Return likely search regions for the target desktop icon.
+Return up to {max_regions} likely search regions for the target desktop icon.
 
 Rules:
 - Return ONLY valid JSON.
@@ -10,7 +10,6 @@ Rules:
 - Use fractions from 0.0 to 1.0.
 - Keep strings short.
 - If the target is clearly visible, return only the best region.
-- Do not select Notepad++, Notes, WordPad, VS Code, browsers, or text documents.
 
 JSON format:
 {{
@@ -32,16 +31,16 @@ GROUNDING_PROMPT = """You are a GUI grounding agent. Locate a specific desktop i
 
 Target: {target_description}
 
-This desktop may be cluttered and may use either light or dark theme.
-Use BOTH visual appearance AND label text to identify the correct icon.
-
-For Windows Notepad specifically:
-- LABEL TEXT: "Notepad" or "notepad" exactly or very close.
-- ICON APPEARANCE: Simple document/notepad shape with horizontal lines. Color may vary by theme.
-- Do NOT select: Notepad++, Notes, WordPad, VS Code, browser icons, or any rich text editor.
+The desktop may be cluttered and may use either a light or dark Windows theme.
+Icons may appear at small, medium, or large Windows desktop icon sizes — judge by
+proportion, not absolute pixel size. Use BOTH visual appearance AND label text
+to identify the correct icon, and prefer the icon whose label most exactly matches
+the target name (e.g., 'Notepad' over 'Notepad++' or 'Notes').
 
 Task:
-Return up to {max_proposals} possible target boxes. If there is only one strong match, return one proposal.
+Return up to {max_proposals} possible target boxes, one per matching icon if
+multiple visually-similar icons are visible. If there is only one strong match,
+return one proposal. Rank proposals by how confidently they match the target.
 
 Respond ONLY with valid JSON:
 {{
@@ -71,22 +70,22 @@ Rules:
 """
 
 CACHE_CHECK_PROMPT = """Look carefully at this small image.
-Is there a desktop icon whose TEXT LABEL says "Notepad" or "notepad"?
+
+Target: {target_description}
+
+Is there a desktop icon in this image that matches the target?
 The icon may appear in light or dark theme.
-Do not confuse it with Notepad++, Notes, WordPad, or similar names.
-Respond ONLY with: {"found": true} or {"found": false}
+Respond ONLY with: {{"found": true}} or {{"found": false}}
 """
 
-VERIFY_PROMPT = """Look at this icon carefully.
+VERIFY_PROMPT = """Look at this small image carefully.
 
-Is this the standard Windows Notepad application icon?
-- It should be a simple document/notepad shape with horizontal lines.
-- It may appear in light or dark theme.
-- It is NOT Notepad++.
-- It is NOT WordPad, Notes, VS Code, or another app.
+Target: {target_description}
+
+Does this image show the correct target icon?
 
 Respond ONLY with:
-{"correct": true}
+{{"correct": true}}
 or
-{"correct": false, "reason": "brief explanation"}
+{{"correct": false, "reason": "brief explanation"}}
 """

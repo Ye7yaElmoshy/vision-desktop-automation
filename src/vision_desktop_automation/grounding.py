@@ -7,6 +7,7 @@ from vision_desktop_automation.config import (
     ALLOW_DIRECT_GROUNDING_FALLBACK,
     BOX_NMS_IOU_THRESHOLD,
     BOX_SCORE_WEIGHT,
+    DISAMBIGUATION_MARGIN,
     GROUNDING_CONFIDENCE_WEIGHT,
     MAX_CANDIDATE_REGIONS,
     MAX_GROUNDING_PROPOSALS,
@@ -255,7 +256,12 @@ def parse_grounding_proposals(data: dict[str, Any]) -> list[dict[str, Any]]:
     return nms_proposals(proposals)
 
 
-def verify_icon_identity(screenshot: Image.Image, x_pct: float, y_pct: float) -> bool:
+def verify_icon_identity(
+    screenshot: Image.Image,
+    x_pct: float,
+    y_pct: float,
+    target_description: str = "",
+) -> bool:
     try:
         img_w, img_h = screenshot.size
         cx = int(x_pct * img_w)
@@ -267,17 +273,66 @@ def verify_icon_identity(screenshot: Image.Image, x_pct: float, y_pct: float) ->
         y2 = min(img_h, cy + pad)
         crop = screenshot.crop((x1, y1, x2, y2))
 
-        response = call_gemini_vision(VERIFY_PROMPT, crop)
+        prompt = VERIFY_PROMPT.format(target_description=target_description)
+        response = call_gemini_vision(prompt, crop)
         result = parse_vlm_json(response)
         correct = result.get("correct", True)
         if correct:
-            logging.info("Icon verified: correct Windows Notepad icon")
+            logging.info("Icon verified: correct target icon")
         else:
             logging.warning(f"Icon verification failed: {result.get('reason', 'unknown')}")
         return bool(correct)
     except Exception as e:
         logging.warning(f"Icon verification failed unexpectedly: {e} — proceeding anyway")
         return True
+
+
+def disambiguate_proposals(
+    image: Image.Image,
+    proposals: list[dict[str, Any]],
+    target_description: str,
+    offset_x: int,
+    offset_y: int,
+) -> dict[str, Any]:
+    """
+    When multiple high-confidence candidates exist, crop each and ask the
+    verifier which one matches the target description best. Used to resolve
+    cases like Notepad vs Notepad++ where visual similarity is high but
+    label text differs.
+    """
+    img_w, img_h = image.size
+    scored: list[tuple[float, dict[str, Any]]] = []
+
+    for proposal in proposals:
+        box = proposal["box"]
+        crop_x1 = int(box["x1"] * img_w)
+        crop_y1 = int(box["y1"] * img_h)
+        crop_x2 = int(box["x2"] * img_w)
+        crop_y2 = int(box["y2"] * img_h)
+
+        crop = image.crop((crop_x1, crop_y1, crop_x2, crop_y2))
+
+        try:
+            response = call_gemini_vision(
+                VERIFY_PROMPT.format(target_description=target_description),
+                crop,
+            )
+            result = parse_vlm_json(response)
+            verified = bool(result.get("correct", False))
+
+            # Use confidence as tiebreaker if both verify
+            score = proposal["proposal_score"] * (1.5 if verified else 0.5)
+            scored.append((score, proposal))
+            logging.info(
+                f"Disambiguation: proposal at "
+                f"({proposal['click_x_pct']:.2f},{proposal['click_y_pct']:.2f}) "
+                f"verified={verified}, adjusted_score={score:.3f}"
+            )
+        except Exception as e:
+            logging.warning(f"Disambiguation verification failed: {e}")
+            scored.append((proposal["proposal_score"] * 0.7, proposal))
+
+    return max(scored, key=lambda x: x[0])[1]
 
 
 # =========================
@@ -289,11 +344,12 @@ def vlm_ground_icon(
     depth: int = 0,
     offset_x: int = 0,
     offset_y: int = 0,
-) -> tuple[int, int, float]:
+) -> tuple[int, int, float, float]:
     """
     Box-based Gemini grounding.
-    Returns absolute click coordinates plus confidence.
-    Still includes a local confidence-zoom fallback inside the current crop.
+    Returns (abs_x, abs_y, confidence, proposal_score).
+    proposal_score weights confidence + label_match + visual_match and is used
+    by the caller for the combined ranking score.
     """
     img_w, img_h = screenshot.size
     logging.info(f"[Depth {depth}] Box grounding {img_w}x{img_h} at offset ({offset_x}, {offset_y})")
@@ -310,8 +366,18 @@ def vlm_ground_icon(
     if not proposals:
         raise ValueError(f"VLM could not locate '{target_description}'")
 
-    best = max(proposals, key=lambda p: p["proposal_score"])
+    # Disambiguate when multiple high-confidence proposals exist
+    top_proposals = sorted(proposals, key=lambda p: p["proposal_score"], reverse=True)[:2]
+
+    if len(top_proposals) > 1 and (top_proposals[0]["proposal_score"] - top_proposals[1]["proposal_score"]) < DISAMBIGUATION_MARGIN:
+        # Two close candidates — verify both and pick by label match
+        best = disambiguate_proposals(screenshot, top_proposals, target_description, offset_x, offset_y)
+        logging.info(f"Disambiguated between {len(top_proposals)} close candidates")
+    else:
+        best = top_proposals[0]
+
     confidence = float(best["confidence"])
+    proposal_score = float(best["proposal_score"])
     click_x_pct = float(best["click_x_pct"])
     click_y_pct = float(best["click_y_pct"])
 
@@ -342,9 +408,9 @@ def vlm_ground_icon(
     abs_y = int(offset_y + click_y_pct * img_h)
     logging.info(
         f"Grounded box proposal: ({abs_x}, {abs_y}), "
-        f"confidence={confidence:.2f}, proposal_score={best['proposal_score']:.2f}"
+        f"confidence={confidence:.2f}, proposal_score={proposal_score:.2f}"
     )
-    return abs_x, abs_y, confidence
+    return abs_x, abs_y, confidence, proposal_score
 
 
 def search_region_recursive(
@@ -363,7 +429,7 @@ def search_region_recursive(
 
     # First try direct box grounding inside this region.
     try:
-        x, y, conf = vlm_ground_icon(
+        x, y, conf, prop_score = vlm_ground_icon(
             crop,
             target_description,
             depth=0,
@@ -385,13 +451,13 @@ def search_region_recursive(
             )
             verified = True
         else:
-            verified = verify_icon_identity(screenshot, x_pct_full, y_pct_full)
+            verified = verify_icon_identity(screenshot, x_pct_full, y_pct_full, target_description)
 
         if verified:
             combined_score = (
                 GROUNDING_CONFIDENCE_WEIGHT * conf
                 + REGION_SCORE_WEIGHT * float(region["score"])
-                + BOX_SCORE_WEIGHT * conf
+                + BOX_SCORE_WEIGHT * prop_score
             )
             results.append(
                 {
@@ -448,7 +514,8 @@ def planner_guided_ground_icon(screenshot: Image.Image, target_description: str)
     7. Direct full-screen box grounding is used as fallback.
     """
     if not USE_PLANNER_CANDIDATE_REGIONS:
-        return vlm_ground_icon(screenshot, target_description)
+        x, y, conf, _ = vlm_ground_icon(screenshot, target_description)
+        return x, y, conf
 
     try:
         regions = propose_candidate_regions(screenshot, target_description)
@@ -460,7 +527,8 @@ def planner_guided_ground_icon(screenshot: Image.Image, target_description: str)
 
         if ALLOW_DIRECT_GROUNDING_FALLBACK:
             logging.warning(f"Planner failed: {e} — falling back to direct grounding")
-            return vlm_ground_icon(screenshot, target_description)
+            x, y, conf, _ = vlm_ground_icon(screenshot, target_description)
+            return x, y, conf
 
         raise RuntimeError(f"Primary planner-guided flow failed before grounding: {e}")
 
@@ -509,6 +577,7 @@ def planner_guided_ground_icon(screenshot: Image.Image, target_description: str)
 
     if ALLOW_DIRECT_GROUNDING_FALLBACK:
         logging.warning("No planner region produced a verified result — falling back to direct full-screen grounding")
-        return vlm_ground_icon(screenshot, target_description)
+        x, y, conf, _ = vlm_ground_icon(screenshot, target_description)
+        return x, y, conf
 
     raise RuntimeError("Primary planner-guided flow failed: no verified candidate from planner regions")
