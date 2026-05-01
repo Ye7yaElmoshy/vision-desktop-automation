@@ -21,13 +21,16 @@ if str(REPO_SRC) not in sys.path:
 
 from vision_desktop_automation.config import (
     BOX_SCORE_WEIGHT,
+    DISAMBIGUATION_MARGIN,
     GROUNDING_CONFIDENCE_WEIGHT,
     MIN_PLANNER_REGION_SCORE,
     MIN_REGION_HEIGHT_PX,
     MIN_REGION_WIDTH_PX,
     REGION_SCORE_WEIGHT,
+    SEARCH_CONFIDENCE_THRESHOLD,
 )
 from vision_desktop_automation.grounding import (
+    disambiguate_proposals,
     nms_proposals,
     nms_regions,
     parse_grounding_proposals,
@@ -232,7 +235,7 @@ def test_propose_candidate_regions_parses_valid_json(fake_screenshot):
     assert scores == sorted(scores, reverse=True)
 
 
-def test_propose_candidate_regions_filters_low_score(fake_screenshot):
+def test_propose_candidate_regions_filters_low_score_regions(fake_screenshot):
     """Regions below MIN_PLANNER_REGION_SCORE (0.50) must be dropped."""
     parsed = _planner_response([
         {"name": "good", "score": 0.95, "x1_pct": 0.0, "y1_pct": 0.0, "x2_pct": 0.2, "y2_pct": 0.2},
@@ -247,7 +250,7 @@ def test_propose_candidate_regions_filters_low_score(fake_screenshot):
     assert regions[0]["score"] >= MIN_PLANNER_REGION_SCORE
 
 
-def test_propose_candidate_regions_expands_tight_regions(fake_screenshot):
+def test_propose_candidate_regions_expands_tight_planner_regions(fake_screenshot):
     """A region tighter than MIN_REGION_WIDTH_PX must be expanded so the
     grounder gets enough icon + label context."""
     # 0.01 of 1920 == 19px wide → smaller than MIN_REGION_WIDTH_PX (80)
@@ -296,10 +299,11 @@ def test_vlm_ground_icon_recurses_on_low_confidence(fake_screenshot):
     assert conf == pytest.approx(0.95)
 
 
-def test_search_region_recursive_combined_score(fake_screenshot):
+def test_combined_score_uses_three_distinct_signals(fake_screenshot):
     """The combined_score formula must be:
        GROUNDING_CONFIDENCE_WEIGHT * conf + REGION_SCORE_WEIGHT * region_score + BOX_SCORE_WEIGHT * prop_score.
-    This guards against the regression where conf was double-counted."""
+    Guards against the regression where conf was used twice (BOX_SCORE_WEIGHT * conf)
+    instead of being a third independent signal weighted by proposal_score."""
     region = {
         "name": "test", "score": 0.8, "reason": "",
         "px1": 0, "py1": 0, "px2": 1920, "py2": 1080,
@@ -340,3 +344,116 @@ def test_planner_guided_ground_icon_falls_back_to_direct(fake_screenshot):
     x, y, conf = result
     assert (x, y, conf) == (500, 500, 0.9)
     mock_ground.assert_called_once_with(fake_screenshot, "Test target")
+
+
+# =========================================================================
+# Disambiguation tests (multi-icon resolution — Notepad vs Notepad++ etc.)
+# =========================================================================
+
+
+def test_disambiguate_proposals_picks_verified_candidate(fake_screenshot):
+    """When the verifier rejects the higher-scored proposal but accepts the
+    lower-scored one, the lower-scored proposal must win because verified=True
+    multiplies its score by 1.5x while unverified gets 0.5x."""
+    first = {
+        "proposal_score": 0.85,
+        "confidence": 0.85,
+        "label_match": 0.85,
+        "visual_match": 0.85,
+        "box": {"x1": 0.10, "y1": 0.10, "x2": 0.20, "y2": 0.20},
+        "click_x_pct": 0.15,
+        "click_y_pct": 0.15,
+        "reason": "first",
+    }
+    second = {
+        "proposal_score": 0.80,
+        "confidence": 0.80,
+        "label_match": 0.80,
+        "visual_match": 0.80,
+        "box": {"x1": 0.70, "y1": 0.70, "x2": 0.80, "y2": 0.80},
+        "click_x_pct": 0.75,
+        "click_y_pct": 0.75,
+        "reason": "second",
+    }
+
+    # Verifier: first → False, second → True
+    # → first adjusted = 0.85 * 0.5 = 0.425
+    # → second adjusted = 0.80 * 1.5 = 1.20  (winner)
+    verifier_results = [{"correct": False}, {"correct": True}]
+
+    with patch("vision_desktop_automation.grounding.call_gemini_vision", return_value="{}"), \
+         patch("vision_desktop_automation.grounding.parse_vlm_json", side_effect=verifier_results):
+        result = disambiguate_proposals(
+            fake_screenshot, [first, second], "Test target", 0, 0
+        )
+
+    assert result is second
+
+
+def _disambig_grounder_response(score_a: float, score_b: float) -> dict:
+    """Build a grounder response with two non-overlapping proposals so NMS keeps both.
+    proposal_score = 0.50*conf + 0.30*label_match + 0.20*visual_match;
+    setting all three equal makes proposal_score == score_a / score_b directly."""
+    return {
+        "proposals": [
+            {
+                "found": True,
+                "confidence": score_a, "label_match": score_a, "visual_match": score_a,
+                "x1_pct": 0.10, "y1_pct": 0.10, "x2_pct": 0.20, "y2_pct": 0.20,
+                "click_x_pct": 0.15, "click_y_pct": 0.15,
+            },
+            {
+                "found": True,
+                "confidence": score_b, "label_match": score_b, "visual_match": score_b,
+                "x1_pct": 0.70, "y1_pct": 0.70, "x2_pct": 0.80, "y2_pct": 0.80,
+                "click_x_pct": 0.75, "click_y_pct": 0.75,
+            },
+        ]
+    }
+
+
+def test_disambiguation_triggers_when_proposals_within_margin(fake_screenshot):
+    """If the top-2 grounder proposals are within DISAMBIGUATION_MARGIN of each
+    other in proposal_score, vlm_ground_icon must run disambiguate_proposals
+    instead of blindly picking the higher score."""
+    # Top two scores 0.95 and 0.90 → margin 0.05 < DISAMBIGUATION_MARGIN (0.10)
+    grounder = _disambig_grounder_response(0.95, 0.90)
+    assert (0.95 - 0.90) < DISAMBIGUATION_MARGIN, "test setup must be within margin"
+
+    # The mocked disambiguator returns a parsed-proposal-shaped dict with high
+    # confidence so vlm_ground_icon doesn't recurse.
+    fake_winner = {
+        "proposal_score": 0.95,
+        "confidence": 0.95,
+        "label_match": 0.95,
+        "visual_match": 0.95,
+        "box": {"x1": 0.10, "y1": 0.10, "x2": 0.20, "y2": 0.20},
+        "click_x_pct": 0.15,
+        "click_y_pct": 0.15,
+        "reason": "mocked winner",
+    }
+
+    with patch("vision_desktop_automation.grounding.call_gemini_vision", return_value="{}"), \
+         patch("vision_desktop_automation.grounding.parse_vlm_json", return_value=grounder), \
+         patch("vision_desktop_automation.grounding.disambiguate_proposals",
+               return_value=fake_winner) as mock_disambig:
+        vlm_ground_icon(fake_screenshot, "Test target")
+
+    mock_disambig.assert_called_once()
+
+
+def test_disambiguation_skipped_when_clear_winner(fake_screenshot):
+    """When the top-2 proposals are well outside DISAMBIGUATION_MARGIN, the
+    disambiguator must NOT be invoked — the higher-scored proposal wins
+    directly (saves an extra round of VLM calls)."""
+    # 0.95 vs 0.50 → margin 0.45 > DISAMBIGUATION_MARGIN
+    grounder = _disambig_grounder_response(0.95, 0.50)
+    assert (0.95 - 0.50) > DISAMBIGUATION_MARGIN, "test setup must exceed margin"
+
+    with patch("vision_desktop_automation.grounding.call_gemini_vision", return_value="{}"), \
+         patch("vision_desktop_automation.grounding.parse_vlm_json", return_value=grounder), \
+         patch("vision_desktop_automation.grounding.disambiguate_proposals") as mock_disambig:
+        x, y, conf, _ = vlm_ground_icon(fake_screenshot, "Test target")
+
+    mock_disambig.assert_not_called()
+    assert conf == pytest.approx(0.95)
