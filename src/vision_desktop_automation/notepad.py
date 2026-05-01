@@ -50,10 +50,33 @@ from vision_desktop_automation.grounding import (
 from vision_desktop_automation.template_matching import template_match_icon
 
 def get_notepad_windows():
+    """
+    Return real Notepad app windows only.
+
+    The previous implementation used pygetwindow.getWindowsWithTitle("Notepad"),
+    which is a substring match and incorrectly matches anything containing
+    "notepad" — e.g. an editor showing the file 'notepad.py' has a title like
+    'project – notepad.py' and was being treated as a launched Notepad window.
+
+    Real Notepad windows always have titles of the form:
+        "<file or 'Untitled'> - Notepad"
+        "*<file> - Notepad"             (unsaved indicator)
+    so we filter on that suffix and exclude anything else (Notepad++, editors,
+    file explorers, etc.).
+    """
     try:
         import pygetwindow as gw
 
-        return gw.getWindowsWithTitle("Notepad")
+        windows = []
+        for w in gw.getAllWindows():
+            title = str(getattr(w, "title", "")).strip()
+            if not title:
+                continue
+            # Strip leading "*" used to mark unsaved changes, then check suffix.
+            normalized = title[1:] if title.startswith("*") else title
+            if normalized.endswith(" - Notepad"):
+                windows.append(w)
+        return windows
     except Exception:
         return []
 
