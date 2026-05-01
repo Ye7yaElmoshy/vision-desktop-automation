@@ -214,6 +214,7 @@ def show_desktop() -> None:
 
 
 def reset_ui_state() -> None:
+    move_mouse_to_safe_position()
     pyautogui.press("escape")
     time.sleep(UI_RESET_WAIT)
 

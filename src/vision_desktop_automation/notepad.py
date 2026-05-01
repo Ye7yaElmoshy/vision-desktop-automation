@@ -31,6 +31,7 @@ from vision_desktop_automation.desktop import (
     icon_still_at_cached_location,
     increment_cache_hits,
     invalidate_icon_cache,
+    move_mouse_to_safe_position,
     reset_ui_state,
     update_icon_cache,
 )
@@ -313,6 +314,7 @@ def open_notepad():
 
             logging.info(f"Double-clicking Notepad at ({x}, {y})")
             pyautogui.doubleClick(x, y, interval=0.2)
+            move_mouse_to_safe_position()
 
             launched = False
             for tick in range(NOTEPAD_OPEN_WAIT_MAX):
