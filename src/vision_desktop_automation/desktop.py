@@ -229,7 +229,7 @@ def ensure_desktop_clear() -> bool:
     logging.info("Showing desktop for grounding...")
 
     pyautogui.hotkey("win", "m")
-    time.sleep(1.0)
+    time.sleep(0.6)  # Was 1.0 — Win+M animation completes in ~400ms
 
     active_title = get_active_window_title().strip()
 
@@ -240,7 +240,7 @@ def ensure_desktop_clear() -> bool:
     logging.info(f"Active window after Win+M: '{active_title}'")
 
     pyautogui.hotkey("win", "d")
-    time.sleep(1.0)
+    time.sleep(0.6)
 
     active_title = get_active_window_title().strip()
 

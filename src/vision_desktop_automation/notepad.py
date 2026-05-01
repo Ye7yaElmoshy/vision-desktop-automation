@@ -261,8 +261,10 @@ def dismiss_unexpected_window(title: str):
 
 
 def open_notepad():
-    ensure_desktop_clear()
-    reset_ui_state()
+    # Single desktop-clear at entry — close_all_notepad_windows handles
+    # leftover Notepad windows; the desktop is already clear from the
+    # previous post's close_notepad call. The ensure_desktop_clear inside
+    # the per-attempt loop below handles the cold-start case.
     close_all_notepad_windows()
     ensure_desktop_clear()
     reset_ui_state()
@@ -345,10 +347,14 @@ def open_notepad():
             move_mouse_to_safe_position()
 
             launched = False
-            for tick in range(NOTEPAD_OPEN_WAIT_MAX):
-                time.sleep(1.0)
+            # Poll every 0.2s instead of every 1.0s — same total timeout,
+            # but detects Notepad opening 0.5–0.8s earlier on average.
+            poll_ticks = NOTEPAD_OPEN_WAIT_MAX * 5
+            for tick in range(poll_ticks):
+                time.sleep(0.2)
                 if get_notepad_windows():
-                    logging.info(f"Notepad opened after {tick + 1}s")
+                    elapsed_s = (tick + 1) * 0.2
+                    logging.info(f"Notepad opened after {elapsed_s:.1f}s")
                     launched = True
                     break
 
@@ -424,13 +430,13 @@ def save_file(post_id: int):
                 pyautogui.hotkey("ctrl", "s")
                 time.sleep(SAVE_DIALOG_WAIT)
 
-            time.sleep(0.5)
+            time.sleep(0.15)
             pyperclip.copy(full_path)
-            time.sleep(0.2)
+            time.sleep(0.1)
             pyautogui.hotkey("ctrl", "a")
-            time.sleep(0.2)
+            time.sleep(0.1)
             pyautogui.hotkey("ctrl", "v")
-            time.sleep(0.5)
+            time.sleep(0.2)
             pyautogui.press("enter")
             time.sleep(POST_ENTER_WAIT)
 
@@ -478,11 +484,11 @@ def close_notepad():
     if windows:
         try:
             windows[0].activate()
-            time.sleep(0.5)
+            time.sleep(0.25)
             # Click on title bar to ensure window has keyboard focus
             w = windows[0]
             pyautogui.click(w.left + w.width // 2, w.top + 15)
-            time.sleep(0.3)
+            time.sleep(0.15)
         except Exception:
             pass
 

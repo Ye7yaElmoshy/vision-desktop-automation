@@ -96,13 +96,13 @@ POST_LIMIT = 10
 # TIMING
 # =========================
 DESKTOP_WAIT = 1.0
-UI_RESET_WAIT = 0.3
-NOTEPAD_OPEN_WAIT_MAX = 12
-PASTE_WAIT = 0.8
-SAVE_DIALOG_WAIT = 3.0
-POST_ENTER_WAIT = 1.0
-AFTER_SAVE_WAIT = 1.0
-AFTER_CLOSE_WAIT = 1.5
+UI_RESET_WAIT = 0.2          # Was 0.3 — Escape key is instant
+NOTEPAD_OPEN_WAIT_MAX = 12   # Total seconds (poll loop converts to 60 ticks of 0.2s)
+PASTE_WAIT = 0.5             # Was 0.8 — paste verification follows immediately
+SAVE_DIALOG_WAIT = 1.5       # Was 3.0 — only used as fallback after wait_for_save_dialog times out
+POST_ENTER_WAIT = 1.0        # DO NOT CHANGE — required for overwrite dialog appearance
+AFTER_SAVE_WAIT = 0.6        # Was 1.0 — file existence check follows
+AFTER_CLOSE_WAIT = 0.8       # Was 1.5 — Ctrl+W is fast on Notepad
 
 # =========================
 # RETRIES
