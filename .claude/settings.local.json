@@ -6,7 +6,13 @@
       "Bash(python -c \"import sys; sys.path.insert\\(0, 'src'\\); import vision_desktop_automation.main as m; import sys; sys.argv = ['main', '--help']; m.parse_args\\(\\)\")",
       "Bash(python -m pytest tests/test_grounding.py -v)",
       "Bash(python -m pip install pytest)",
-      "Bash(git stash *)"
+      "Bash(git stash *)",
+      "Bash(git add *)",
+      "Bash(python -c \"import sys; sys.path.insert\\(0, 'src'\\); from vision_desktop_automation import main, notepad, api; print\\('imports OK'\\)\")",
+      "Bash(python -m pytest tests/ -q)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)",
+      "Bash(python -c \"import sys; sys.path.insert\\(0, 'src'\\); from vision_desktop_automation import notepad, config, desktop; print\\('imports OK'\\)\")"
     ]
   }
 }
