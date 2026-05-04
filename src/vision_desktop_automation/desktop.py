@@ -209,6 +209,7 @@ def invalidate_icon_cache() -> None:
 def show_desktop() -> None:
     """Minimize windows without toggling them back open."""
     logging.info("Minimizing all windows...")
+    exit_desktop_overlays()
     pyautogui.hotkey("win", "m")
     time.sleep(DESKTOP_WAIT)
 
@@ -217,6 +218,22 @@ def reset_ui_state() -> None:
     move_mouse_to_safe_position()
     pyautogui.press("escape")
     time.sleep(UI_RESET_WAIT)
+    pyautogui.press("escape")
+    time.sleep(UI_RESET_WAIT)
+
+
+def exit_desktop_overlays() -> None:
+    """
+    Dismiss transient Windows overlays before desktop grounding/clicking.
+
+    Task View can leave pygetwindow reporting the selected app title instead of
+    "Task View", so Escape is sent unconditionally. This is harmless on the
+    desktop and avoids clicking task thumbnails as if they were desktop icons.
+    """
+    move_mouse_to_safe_position()
+    for _ in range(2):
+        pyautogui.press("escape")
+        time.sleep(0.2)
 
 
 def ensure_desktop_clear() -> bool:
@@ -228,6 +245,7 @@ def ensure_desktop_clear() -> bool:
     """
     logging.info("Showing desktop for grounding...")
 
+    exit_desktop_overlays()
     pyautogui.hotkey("win", "m")
     time.sleep(0.6)  # Was 1.0 — Win+M animation completes in ~400ms
 
@@ -239,6 +257,7 @@ def ensure_desktop_clear() -> bool:
 
     logging.info(f"Active window after Win+M: '{active_title}'")
 
+    exit_desktop_overlays()
     pyautogui.hotkey("win", "d")
     time.sleep(0.6)
 
@@ -247,6 +266,16 @@ def ensure_desktop_clear() -> bool:
     if not active_title or active_title.lower() in {"program manager", "desktop"}:
         logging.info("Desktop clear after fallback Win+D")
         return True
+
+    if active_title.lower() == "task view":
+        logging.info("Task View active after desktop shortcut — dismissing and retrying Win+M")
+        exit_desktop_overlays()
+        pyautogui.hotkey("win", "m")
+        time.sleep(0.6)
+        active_title = get_active_window_title().strip()
+        if not active_title or active_title.lower() in {"program manager", "desktop"}:
+            logging.info("Desktop clear after Task View dismissal")
+            return True
 
     logging.warning(f"Could not confirm desktop is clear. Active window: '{active_title}'")
     return False

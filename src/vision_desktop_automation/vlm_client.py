@@ -16,6 +16,34 @@ from vision_desktop_automation.config import (
     VLM_MODEL,
 )
 
+RETRYABLE_HTTP_STATUSES = {500, 502, 503, 504}
+
+
+class NonRetryableGeminiAPIError(RuntimeError):
+    """Raised for Gemini HTTP errors that should not be retried locally."""
+
+
+def _response_error_detail(response: requests.Response) -> str:
+    """Extract the useful Gemini error message without dumping a huge body."""
+    try:
+        data = response.json()
+    except ValueError:
+        text = response.text.strip()
+        return text[:500] if text else (response.reason or "no response body")
+
+    error = data.get("error") if isinstance(data, dict) else None
+    if isinstance(error, dict):
+        status = str(error.get("status", "")).strip()
+        message = str(error.get("message", "")).strip()
+        if status and message:
+            return f"{status}: {message}"[:500]
+        if message:
+            return message[:500]
+        if status:
+            return status[:500]
+
+    return json.dumps(data, sort_keys=True)[:500]
+
 
 def image_to_base64(image: Image.Image, max_width: int = 1280) -> tuple[str, str]:
     """Convert a PIL image to base64 for Gemini Vision. Returns (data, mime_type).
@@ -76,11 +104,19 @@ def call_gemini_vision(prompt: str, image: Image.Image) -> str:
         try:
             response = requests.post(url, json=payload, headers=headers, timeout=45)
 
-            if response.status_code in (500, 502, 503, 504):
+            if response.status_code in RETRYABLE_HTTP_STATUSES:
                 wait = min(45, (2 ** attempt) * 3 + random.uniform(1.0, 4.0))
                 logging.warning(f"Gemini {response.status_code} — retry in {wait:.1f}s")
                 time.sleep(wait)
                 continue
+
+            if response.status_code >= 400:
+                detail = _response_error_detail(response)
+                last_error = f"HTTP {response.status_code}: {detail}"
+                logging.warning(f"Gemini request failed: {last_error}")
+                raise NonRetryableGeminiAPIError(
+                    f"Gemini API failed after {attempt} attempt(s). Last: {last_error}"
+                )
 
             response.raise_for_status()
 
@@ -96,6 +132,9 @@ def call_gemini_vision(prompt: str, image: Image.Image) -> str:
             last_error = "timeout"
             logging.warning(f"Gemini timeout attempt {attempt}")
             time.sleep(2 ** attempt)
+
+        except NonRetryableGeminiAPIError:
+            raise
 
         except Exception as e:
             last_error = e

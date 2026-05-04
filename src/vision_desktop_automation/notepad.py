@@ -48,6 +48,23 @@ from vision_desktop_automation.grounding import (
 
 from vision_desktop_automation.template_matching import template_match_icon
 
+
+def is_visible_sane_window(w: Any) -> bool:
+    """Return True for normal on-screen Notepad windows."""
+    left = int(getattr(w, "left", 0))
+    top = int(getattr(w, "top", 0))
+    width = int(getattr(w, "width", 0))
+    height = int(getattr(w, "height", 0))
+
+    if width <= 100 or height <= 100:
+        return False
+
+    if left < -1000 or top < -1000:
+        return False
+
+    return True
+
+
 def get_notepad_windows():
     """
     Return real Notepad app windows only.
@@ -80,6 +97,21 @@ def get_notepad_windows():
         return []
 
 
+def get_visible_notepad_windows():
+    return [w for w in get_notepad_windows() if is_visible_sane_window(w)]
+
+
+def log_notepad_window(idx: int, w: Any) -> None:
+    title = str(getattr(w, "title", ""))
+    left = int(getattr(w, "left", 0))
+    top = int(getattr(w, "top", 0))
+    width = int(getattr(w, "width", 0))
+    height = int(getattr(w, "height", 0))
+    logging.info(
+        f"Notepad window #{idx}: title='{title}', "
+        f"left={left}, top={top}, width={width}, height={height}"
+    )
+
 
 def ensure_notepad_focused():
     windows = get_notepad_windows()
@@ -90,24 +122,10 @@ def ensure_notepad_focused():
         sane_windows = []
 
         for idx, w in enumerate(windows):
-            left = int(getattr(w, "left", 0))
-            top = int(getattr(w, "top", 0))
-            width = int(getattr(w, "width", 0))
-            height = int(getattr(w, "height", 0))
-            title = str(getattr(w, "title", ""))
+            log_notepad_window(idx, w)
 
-            logging.info(
-                f"Notepad window #{idx}: title='{title}', "
-                f"left={left}, top={top}, width={width}, height={height}"
-            )
-
-            if width <= 100 or height <= 100:
-                continue
-
-            if left < -1000 or top < -1000:
-                continue
-
-            sane_windows.append(w)
+            if is_visible_sane_window(w):
+                sane_windows.append(w)
 
         if not sane_windows:
             raise RuntimeError("No visible sane Notepad window found")
@@ -163,6 +181,15 @@ def close_all_notepad_windows():
 
     for w in windows:
         try:
+            if not is_visible_sane_window(w):
+                logging.info(
+                    f"Closing hidden/minimized leftover Notepad: "
+                    f"'{getattr(w, 'title', '')}'"
+                )
+                w.close()
+                time.sleep(0.5)
+                continue
+
             w.activate()
             time.sleep(0.3)
 
@@ -193,7 +220,10 @@ def close_all_notepad_windows():
         except Exception as e:
             logging.warning(f"Could not save/close leftover Notepad: {e}")
             try:
-                pyautogui.hotkey("alt", "F4")
+                if hasattr(w, "close"):
+                    w.close()
+                else:
+                    pyautogui.hotkey("alt", "F4")
                 time.sleep(0.5)
                 pyautogui.press("tab")
                 time.sleep(0.2)
@@ -241,17 +271,9 @@ def dismiss_unexpected_window(title: str):
     except Exception:
         pass
 
-    pyautogui.hotkey("alt", "F4")
+    logging.info("Unexpected non-browser window still present — minimizing instead of closing")
+    pyautogui.hotkey("win", "m")
     time.sleep(0.5)
-    for _ in range(4):
-        time.sleep(0.3)
-        active = get_active_window_title()
-        if any(k in active for k in ["Save", "save", "Confirm", "changes", "Close"]):
-            pyautogui.press("tab")
-            time.sleep(0.2)
-            pyautogui.press("enter")
-            time.sleep(0.3)
-            break
 
 
 # =========================
@@ -343,6 +365,7 @@ def open_notepad():
                 update_icon_cache(x, y, scale_x, scale_y)
 
             logging.info(f"Double-clicking Notepad at ({x}, {y})")
+            move_mouse_to_safe_position()
             pyautogui.doubleClick(x, y, interval=0.2)
             move_mouse_to_safe_position()
 
@@ -352,7 +375,7 @@ def open_notepad():
             poll_ticks = NOTEPAD_OPEN_WAIT_MAX * 5
             for tick in range(poll_ticks):
                 time.sleep(0.2)
-                if get_notepad_windows():
+                if get_visible_notepad_windows():
                     elapsed_s = (tick + 1) * 0.2
                     logging.info(f"Notepad opened after {elapsed_s:.1f}s")
                     launched = True
@@ -480,22 +503,19 @@ def close_notepad():
       Windows 11 (tabbed Notepad)
     """
     logging.info("Closing Notepad")
-    windows = get_notepad_windows()
+    windows = get_visible_notepad_windows()
     if windows:
         try:
-            windows[0].activate()
-            time.sleep(0.25)
-            # Click on title bar to ensure window has keyboard focus
             w = windows[0]
-            pyautogui.click(w.left + w.width // 2, w.top + 15)
-            time.sleep(0.15)
+            w.activate()
+            time.sleep(0.25)
         except Exception:
             pass
 
     pyautogui.hotkey("ctrl", "w")
     time.sleep(AFTER_CLOSE_WAIT)
 
-    if get_notepad_windows():
+    if get_visible_notepad_windows():
         active = get_active_window_title()
         if any(k in active for k in ["Save", "save", "changes", "Confirm", "Notepad"]):
             logging.info(f"Save/confirm dialog: '{active}' — discarding with Tab+Enter")
@@ -505,10 +525,22 @@ def close_notepad():
             time.sleep(0.5)
 
         # Second attempt if still open
-        if get_notepad_windows():
+        if get_visible_notepad_windows():
             logging.warning("Notepad still open after Ctrl+W — sending second Ctrl+W")
             pyautogui.hotkey("ctrl", "w")
             time.sleep(0.5)
+
+    for w in get_notepad_windows():
+        if not is_visible_sane_window(w):
+            try:
+                logging.info(
+                    f"Closing hidden/minimized Notepad after visible close: "
+                    f"'{getattr(w, 'title', '')}'"
+                )
+                w.close()
+                time.sleep(0.3)
+            except Exception as e:
+                logging.warning(f"Could not close hidden Notepad window: {e}")
 
 
 def process_post(post: dict[str, Any]):

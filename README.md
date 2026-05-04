@@ -101,6 +101,18 @@ Run the automation:
 uv run vision-automation
 ```
 
+Run a smaller post batch:
+
+```powershell
+uv run vision-automation --posts 3
+```
+
+Optional CLI overrides:
+
+```powershell
+uv run vision-automation --target "Notepad desktop shortcut icon" --posts 10 --output-dir "$HOME\Desktop\tjm-project"
+```
+
 Alternative run command:
 
 ```powershell
@@ -116,7 +128,7 @@ uv run python -m vision_desktop_automation.main
 3. Locate the Notepad desktop shortcut using planner-guided VLM grounding.
 4. Double-click the detected icon coordinates.
 5. Validate that Notepad launched.
-6. Fetch the first 10 posts from JSONPlaceholder.
+6. Fetch the first 10 posts from JSONPlaceholder by default, or the `--posts` CLI limit if provided.
 7. Paste each post into Notepad using this format:
 
 ```text
@@ -128,7 +140,7 @@ Title: {title}
 8. Save each post as `post_{id}.txt`.
 9. Store the files inside `Desktop/tjm-project`.
 10. Close Notepad.
-11. Repeat the process for all 10 posts.
+11. Repeat the process for all selected posts.
 12. Verify that all generated files exist and contain the expected title.
 
 ---
@@ -222,12 +234,14 @@ If the cache is invalid, the system reruns visual grounding.
 The system includes handling for:
 
 - Icon not found.
-- Gemini API timeout or 503 errors.
+- Gemini API timeout or retryable 5xx errors.
+- Gemini non-retryable API errors such as project/key permission denials, with the Google error body included in logs.
 - Invalid or partial JSON returned by the VLM.
 - Save dialog delays.
 - Existing output files.
 - Notepad launch validation.
-- Leftover Notepad windows.
+- Hidden, minimized, or leftover Notepad windows.
+- Transient Windows overlays such as Task View before desktop grounding.
 - Failed saves.
 - Missing or empty output files.
 
@@ -324,24 +338,23 @@ vision-desktop-automation/
 │
 ├── tests/
 │   ├── __init__.py
-│   ├── test_geometry.py
-│   ├── test_api.py
-│   └── test_files.py
+│   ├── test_grounding.py
+│   ├── test_notepad_windows.py
+│   └── test_vlm_client.py
 │
 ├── templates/          ← OpenCV template images (already exists)
 │
 ├── docs/
-│   ├── screenshots/    ← (already exists)
-│   └── REFACTOR_NOTES.md
+│   └── screenshots/    ← README example screenshots
 │
-├── logs/               ← runtime logs (gitignored)
-├── output/             ← post_{id}.txt files (gitignored)
-├── failure_screenshots/ ← (already exists, move to root only)
+├── annotated_screenshots/ ← annotated runtime screenshots
+├── failure_screenshots/   ← diagnostic screenshots (gitignored)
 │
 ├── .env.example        ← GEMINI_API_KEY=your_key_here
 ├── .gitignore
 ├── pyproject.toml      ← replaces egg-info mess
-├── requirements.txt
+├── uv.lock
+├── REFACTOR_NOTES.md
 └── README.md
 ```
 
@@ -375,27 +388,23 @@ GEMINI_API_KEY=your_gemini_api_key_here
 
 - First-time detection depends on Gemini API availability.
 - Gemini may occasionally return `503` or timeout.
+- A `403 PERMISSION_DENIED` from Gemini usually requires fixing the Google API key/project, not changing local code.
 - Template matching fallback requires local template images in the `templates/` folder.
 - The project is designed for Windows desktop automation.
 - The project was mainly tested on 1920x1080 resolution.
 - Very cluttered desktops may increase grounding latency.
-- If the icon is fully hidden behind another window, the system cannot visually ground it until the desktop is visible.
+- If the icon is fully hidden behind another window or Windows overlay, the system cannot visually ground it until the desktop is visible.
 
 ---
 
 ## Future Improvements
 
-- Split the script into separate modules:
-  - `grounding.py`
-  - `automation.py`
-  - `api.py`
-  - `utils.py`
-- Add CLI arguments for arbitrary target descriptions.
-- Add support for grounding any desktop icon or GUI button.
-- Add unit tests for JSON parsing and coordinate conversion.
-- Improve screenshot annotation placement near screen edges.
-- Add automatic screenshot naming by detected region.
-- Add more robust local fallback methods for API outages.
+- Add a resume/skip-completed CLI mode so interrupted runs can continue from missing `post_{id}.txt` files.
+- Add a local template calibration workflow that captures a fresh icon template and tunes the fallback threshold for the current desktop.
+- Add a provider abstraction so Gemini can be swapped or backed up by another VLM without changing the grounding pipeline.
+- Add GUI integration smoke tests with mocked window handles for Task View, minimized Notepad, and save/overwrite dialogs.
+- Improve screenshot annotation placement near screen edges and include the detected region name in filenames.
+- Add structured run summaries with timings, API retry counts, cache hit rate, and failed-post diagnostics.
 
 ---
 
