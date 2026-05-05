@@ -5,17 +5,14 @@ from typing import Any
 
 import pyautogui
 import pyperclip
-from PIL import Image
 
 from vision_desktop_automation.config import (
     AFTER_CLOSE_WAIT,
     AFTER_SAVE_WAIT,
     ICON_DETECTION_RETRIES,
     NOTEPAD_OPEN_WAIT_MAX,
-    OUTPUT_DIR,
     PASTE_WAIT,
     POST_ENTER_WAIT,
-    POST_LIMIT,
     SAVE_DIALOG_WAIT,
     SAVE_RETRIES,
     SCREENSHOT_PATH,
@@ -23,6 +20,7 @@ from vision_desktop_automation.config import (
     USE_TEMPLATE_MATCHING_FALLBACK,
     VERIFICATION_SKIP_CONFIDENCE,
 )
+import vision_desktop_automation.config as cfg
 
 from vision_desktop_automation.desktop import (
     ensure_desktop_clear,
@@ -32,6 +30,7 @@ from vision_desktop_automation.desktop import (
     icon_still_at_cached_location,
     increment_cache_hits,
     invalidate_icon_cache,
+    move_mouse_to_safe_position,
     reset_ui_state,
     update_icon_cache,
 )
@@ -47,16 +46,71 @@ from vision_desktop_automation.grounding import (
     verify_icon_identity,
 )
 
-from vision_desktop_automation.template_matching import template_match_notepad_icon
+from vision_desktop_automation.template_matching import template_match_icon
+
+
+def is_visible_sane_window(w: Any) -> bool:
+    """Return True for normal on-screen Notepad windows."""
+    left = int(getattr(w, "left", 0))
+    top = int(getattr(w, "top", 0))
+    width = int(getattr(w, "width", 0))
+    height = int(getattr(w, "height", 0))
+
+    if width <= 100 or height <= 100:
+        return False
+
+    if left < -1000 or top < -1000:
+        return False
+
+    return True
+
 
 def get_notepad_windows():
+    """
+    Return real Notepad app windows only.
+
+    The previous implementation used pygetwindow.getWindowsWithTitle("Notepad"),
+    which is a substring match and incorrectly matches anything containing
+    "notepad" — e.g. an editor showing the file 'notepad.py' has a title like
+    'project – notepad.py' and was being treated as a launched Notepad window.
+
+    Real Notepad windows always have titles of the form:
+        "<file or 'Untitled'> - Notepad"
+        "*<file> - Notepad"             (unsaved indicator)
+    so we filter on that suffix and exclude anything else (Notepad++, editors,
+    file explorers, etc.).
+    """
     try:
         import pygetwindow as gw
 
-        return gw.getWindowsWithTitle("Notepad")
+        windows = []
+        for w in gw.getAllWindows():
+            title = str(getattr(w, "title", "")).strip()
+            if not title:
+                continue
+            # Strip leading "*" used to mark unsaved changes, then check suffix.
+            normalized = title[1:] if title.startswith("*") else title
+            if normalized.endswith(" - Notepad"):
+                windows.append(w)
+        return windows
     except Exception:
         return []
 
+
+def get_visible_notepad_windows():
+    return [w for w in get_notepad_windows() if is_visible_sane_window(w)]
+
+
+def log_notepad_window(idx: int, w: Any) -> None:
+    title = str(getattr(w, "title", ""))
+    left = int(getattr(w, "left", 0))
+    top = int(getattr(w, "top", 0))
+    width = int(getattr(w, "width", 0))
+    height = int(getattr(w, "height", 0))
+    logging.info(
+        f"Notepad window #{idx}: title='{title}', "
+        f"left={left}, top={top}, width={width}, height={height}"
+    )
 
 
 def ensure_notepad_focused():
@@ -65,23 +119,40 @@ def ensure_notepad_focused():
         raise RuntimeError("Notepad window lost")
 
     try:
-        w = windows[0]
+        sane_windows = []
+
+        for idx, w in enumerate(windows):
+            log_notepad_window(idx, w)
+
+            if is_visible_sane_window(w):
+                sane_windows.append(w)
+
+        if not sane_windows:
+            raise RuntimeError("No visible sane Notepad window found")
+
+        w = sane_windows[0]
         w.activate()
-        time.sleep(0.3)
-        pyautogui.click(w.left + w.width // 2, w.top + w.height // 2)
-        time.sleep(0.2)
+        time.sleep(0.5)
+
+        # Do not click window coordinates here.
+        # Clicking raw pygetwindow coordinates can move the cursor to a fail-safe corner.
+        logging.info("Notepad activated without mouse-center click")
+
     except Exception as e:
         raise RuntimeError(f"Could not focus Notepad: {e}")
 
 
 def save_notepad_as(save_path: str):
+    # Ctrl+Shift+S works on Windows 11 Notepad; fall back to Alt+F, A for Windows 10
     pyautogui.hotkey("ctrl", "shift", "s")
-    time.sleep(2.0)
+    time.sleep(1.5)
 
     title = get_active_window_title()
-    if "Notepad" in title and "Save" not in title:
-        pyautogui.hotkey("ctrl", "s")
-        time.sleep(2.0)
+    if "Save" not in title:
+        pyautogui.hotkey("alt", "f")
+        time.sleep(0.5)
+        pyautogui.press("a")
+        time.sleep(1.5)
 
     pyperclip.copy(save_path)
     time.sleep(0.2)
@@ -110,6 +181,15 @@ def close_all_notepad_windows():
 
     for w in windows:
         try:
+            if not is_visible_sane_window(w):
+                logging.info(
+                    f"Closing hidden/minimized leftover Notepad: "
+                    f"'{getattr(w, 'title', '')}'"
+                )
+                w.close()
+                time.sleep(0.5)
+                continue
+
             w.activate()
             time.sleep(0.3)
 
@@ -121,7 +201,7 @@ def close_all_notepad_windows():
                 continue
 
             note_num = get_next_unsaved_note_number()
-            save_path = str(OUTPUT_DIR / f"unsaved_note_{note_num}.txt")
+            save_path = str(cfg.OUTPUT_DIR / f"unsaved_note_{note_num}.txt")
             logging.info(f"Saving leftover as: unsaved_note_{note_num}.txt")
 
             save_notepad_as(save_path)
@@ -140,7 +220,10 @@ def close_all_notepad_windows():
         except Exception as e:
             logging.warning(f"Could not save/close leftover Notepad: {e}")
             try:
-                pyautogui.hotkey("alt", "F4")
+                if hasattr(w, "close"):
+                    w.close()
+                else:
+                    pyautogui.hotkey("alt", "F4")
                 time.sleep(0.5)
                 pyautogui.press("tab")
                 time.sleep(0.2)
@@ -151,6 +234,12 @@ def close_all_notepad_windows():
 
 def dismiss_unexpected_window(title: str):
     if not title.strip():
+        return
+
+    # Never Alt+F4 the desktop itself — that triggers the Windows Shutdown dialog.
+    # If the click missed the icon, focus may land on Program Manager (the desktop).
+    if title.lower().strip() in {"program manager", "desktop"}:
+        logging.info("Active window is the desktop itself — no dismissal needed (skipping Alt+F4)")
         return
 
     logging.info(f"Dismissing unexpected window: '{title}'")
@@ -182,17 +271,9 @@ def dismiss_unexpected_window(title: str):
     except Exception:
         pass
 
-    pyautogui.hotkey("alt", "F4")
+    logging.info("Unexpected non-browser window still present — minimizing instead of closing")
+    pyautogui.hotkey("win", "m")
     time.sleep(0.5)
-    for _ in range(4):
-        time.sleep(0.3)
-        active = get_active_window_title()
-        if any(k in active for k in ["Save", "save", "Confirm", "changes", "Close"]):
-            pyautogui.press("tab")
-            time.sleep(0.2)
-            pyautogui.press("enter")
-            time.sleep(0.3)
-            break
 
 
 # =========================
@@ -202,8 +283,10 @@ def dismiss_unexpected_window(title: str):
 
 
 def open_notepad():
-    ensure_desktop_clear()
-    reset_ui_state()
+    # Single desktop-clear at entry — close_all_notepad_windows handles
+    # leftover Notepad windows; the desktop is already clear from the
+    # previous post's close_notepad call. The ensure_desktop_clear inside
+    # the per-attempt loop below handles the cold-start case.
     close_all_notepad_windows()
     ensure_desktop_clear()
     reset_ui_state()
@@ -217,7 +300,7 @@ def open_notepad():
             if cached_position is not None:
                 x, y = cached_position
                 logging.info(f"Checking icon cache: ({x}, {y})")
-                if not icon_still_at_cached_location(x, y, scale_x, scale_y):
+                if not icon_still_at_cached_location(x, y, scale_x, scale_y, TARGET_DESCRIPTION):
                     logging.warning("Icon moved or changed — invalidating cache")
                     invalidate_icon_cache()
                     raise RuntimeError("Cache invalidated")
@@ -226,9 +309,8 @@ def open_notepad():
                 ensure_desktop_clear()
                 time.sleep(0.5)
 
-                screenshot = pyautogui.screenshot()
-                screenshot.save(SCREENSHOT_PATH)
-                pil_image = Image.open(SCREENSHOT_PATH)
+                pil_image = pyautogui.screenshot()
+                pil_image.save(SCREENSHOT_PATH)
 
                 detection_method = "planner_guided_vlm"
 
@@ -244,7 +326,7 @@ def open_notepad():
                         raise
 
                     logging.info("Trying local template-matching fallback...")
-                    template_result = template_match_notepad_icon(pil_image)
+                    template_result = template_match_icon(pil_image)
 
                     if template_result is None:
                         raise RuntimeError(
@@ -256,20 +338,21 @@ def open_notepad():
                     detection_method = "template_matching_fallback"
 
                     logging.info(
-                        f"Template fallback selected Notepad candidate at "
+                        f"Template fallback selected candidate at "
                         f"({x_shot},{y_shot}) with score={confidence:.3f}"
                     )
 
                 if detection_method == "template_matching_fallback":
                     logging.info(
                         "Skipping VLM verifier for template fallback; "
-                        "Notepad launch validation will confirm result"
+                        "launch validation will confirm result"
                     )
                 elif confidence < VERIFICATION_SKIP_CONFIDENCE:
                     if not verify_icon_identity(
                         pil_image,
                         x_shot / pil_image.width,
                         y_shot / pil_image.height,
+                        TARGET_DESCRIPTION,
                     ):
                         raise ValueError("Wrong icon detected after planner-guided grounding")
                 else:
@@ -277,18 +360,24 @@ def open_notepad():
                 x = int(x_shot * scale_x)
                 y = int(y_shot * scale_y)
                 logging.info(f"Grounded: shot=({x_shot},{y_shot}) → screen=({x},{y})")
-                save_annotated_screenshot(f"attempt_{attempt}", x, y)
+                save_annotated_screenshot(f"attempt_{attempt}", x, y, pil_image)
 
                 update_icon_cache(x, y, scale_x, scale_y)
 
             logging.info(f"Double-clicking Notepad at ({x}, {y})")
+            move_mouse_to_safe_position()
             pyautogui.doubleClick(x, y, interval=0.2)
+            move_mouse_to_safe_position()
 
             launched = False
-            for tick in range(NOTEPAD_OPEN_WAIT_MAX):
-                time.sleep(1.0)
-                if get_notepad_windows():
-                    logging.info(f"Notepad opened after {tick + 1}s")
+            # Poll every 0.2s instead of every 1.0s — same total timeout,
+            # but detects Notepad opening 0.5–0.8s earlier on average.
+            poll_ticks = NOTEPAD_OPEN_WAIT_MAX * 5
+            for tick in range(poll_ticks):
+                time.sleep(0.2)
+                if get_visible_notepad_windows():
+                    elapsed_s = (tick + 1) * 0.2
+                    logging.info(f"Notepad opened after {elapsed_s:.1f}s")
                     launched = True
                     break
 
@@ -339,7 +428,7 @@ def wait_for_save_dialog(timeout: int = 5) -> bool:
     for _ in range(timeout * 2):
         time.sleep(0.5)
         title = get_active_window_title()
-        if "Save As" in title or ("Notepad" not in title and title.strip()):
+        if "Save As" in title or "Save as" in title:
             logging.info(f"Save dialog detected: '{title}'")
             return True
     logging.warning("Save dialog did not appear")
@@ -348,7 +437,7 @@ def wait_for_save_dialog(timeout: int = 5) -> bool:
 
 def save_file(post_id: int):
     filename = f"post_{post_id}.txt"
-    full_path = str(OUTPUT_DIR / filename)
+    full_path = str(cfg.OUTPUT_DIR / filename)
     last_error = None
 
     for attempt in range(1, SAVE_RETRIES + 1):
@@ -364,13 +453,13 @@ def save_file(post_id: int):
                 pyautogui.hotkey("ctrl", "s")
                 time.sleep(SAVE_DIALOG_WAIT)
 
-            time.sleep(0.5)
+            time.sleep(0.15)
             pyperclip.copy(full_path)
-            time.sleep(0.2)
+            time.sleep(0.1)
             pyautogui.hotkey("ctrl", "a")
-            time.sleep(0.2)
+            time.sleep(0.1)
             pyautogui.hotkey("ctrl", "v")
-            time.sleep(0.5)
+            time.sleep(0.2)
             pyautogui.press("enter")
             time.sleep(POST_ENTER_WAIT)
 
@@ -403,37 +492,60 @@ def save_file(post_id: int):
 
 
 def close_notepad():
+    """
+    Close the current Notepad window using Ctrl+W.
+
+    Ctrl+W is preferred over Alt+F4 because:
+    - Notepad treats it as 'close document' rather than 'kill window'
+    - It cannot accidentally trigger the Windows Shutdown dialog
+      if focus shifts to the desktop mid-call
+    - Works consistently across Windows 10 (classic Notepad) and
+      Windows 11 (tabbed Notepad)
+    """
     logging.info("Closing Notepad")
-    windows = get_notepad_windows()
+    windows = get_visible_notepad_windows()
     if windows:
         try:
-            windows[0].activate()
-            time.sleep(0.2)
+            w = windows[0]
+            w.activate()
+            time.sleep(0.25)
         except Exception:
             pass
 
     pyautogui.hotkey("ctrl", "w")
     time.sleep(AFTER_CLOSE_WAIT)
 
-    if get_notepad_windows():
-        logging.warning("Notepad still open after Ctrl+W — checking for dialog")
+    if get_visible_notepad_windows():
         active = get_active_window_title()
-        if any(k in active for k in ["Save", "save", "changes", "Confirm"]):
-            logging.info(f"Save dialog: '{active}' — discarding with Tab+Enter")
+        if any(k in active for k in ["Save", "save", "changes", "Confirm", "Notepad"]):
+            logging.info(f"Save/confirm dialog: '{active}' — discarding with Tab+Enter")
             pyautogui.press("tab")
             time.sleep(0.2)
             pyautogui.press("enter")
             time.sleep(0.5)
 
-        if get_notepad_windows():
-            logging.warning("Force closing with Alt+F4")
-            pyautogui.hotkey("alt", "F4")
+        # Second attempt if still open
+        if get_visible_notepad_windows():
+            logging.warning("Notepad still open after Ctrl+W — sending second Ctrl+W")
+            pyautogui.hotkey("ctrl", "w")
             time.sleep(0.5)
+
+    for w in get_notepad_windows():
+        if not is_visible_sane_window(w):
+            try:
+                logging.info(
+                    f"Closing hidden/minimized Notepad after visible close: "
+                    f"'{getattr(w, 'title', '')}'"
+                )
+                w.close()
+                time.sleep(0.3)
+            except Exception as e:
+                logging.warning(f"Could not close hidden Notepad window: {e}")
 
 
 def process_post(post: dict[str, Any]):
     logging.info("=" * 60)
-    logging.info(f"Processing post {post['id']} / {POST_LIMIT}")
+    logging.info(f"Processing post {post['id']} / {cfg.POST_LIMIT}")
     open_notepad()
     paste_post_content(post)
     save_file(post["id"])

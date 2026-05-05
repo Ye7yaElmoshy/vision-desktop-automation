@@ -6,6 +6,7 @@ from pathlib import Path
 # =========================
 SCREENSHOT_PATH = Path("screen.png")
 FAILURE_SCREENSHOT_DIR = Path("failure_screenshots")
+ANNOTATED_SCREENSHOT_DIR = Path("annotated_screenshots")
 LOG_FILE = Path("automation.log")
 UNSAVED_NOTE_COUNTER_FILE = Path("unsaved_note_counter.txt")
 TEMPLATE_DIR = Path("templates")
@@ -49,6 +50,10 @@ RECURSIVE_PLANNER_DEPTH = 2
 
 MIN_PLANNER_REGION_SCORE = 0.50
 
+# If the top two grounder proposals are within this score margin, run a
+# verifier-based disambiguation pass instead of blindly picking the highest score.
+DISAMBIGUATION_MARGIN = 0.10
+
 # You said you fixed this, so keep it True.
 ALLOW_DIRECT_GROUNDING_FALLBACK = True
 
@@ -62,7 +67,7 @@ VERIFICATION_SKIP_REGION_SCORE = 0.90
 USE_TEMPLATE_MATCHING_FALLBACK = True
 TEMPLATE_MATCH_THRESHOLD = 0.82
 TEMPLATE_MATCH_SCALES = [0.70, 0.80, 0.90, 1.00, 1.10, 1.20, 1.35, 1.50]
-TEMPLATE_FILE_PATTERNS = ["notepad*.png", "notepad*.jpg", "notepad*.jpeg"]
+TEMPLATE_FILE_PATTERNS = ["*.png", "*.jpg", "*.jpeg"]
 
 # =========================
 # CACHE SETTINGS
@@ -74,7 +79,12 @@ USE_VLM_CACHE_CONFIRMATION = False
 # =========================
 # TARGET
 # =========================
-TARGET_DESCRIPTION = "Notepad desktop shortcut icon"
+TARGET_DESCRIPTION = (
+    "Notepad desktop shortcut icon. "
+    "Label: 'Notepad'. "
+    "Appearance: simple document shape with horizontal lines. "
+    "Exclude: Notepad++, Notes, WordPad, VS Code, browsers, text documents."
+)
 
 # =========================
 # API
@@ -86,13 +96,13 @@ POST_LIMIT = 10
 # TIMING
 # =========================
 DESKTOP_WAIT = 1.0
-UI_RESET_WAIT = 0.3
-NOTEPAD_OPEN_WAIT_MAX = 12
-PASTE_WAIT = 0.8
-SAVE_DIALOG_WAIT = 3.0
-POST_ENTER_WAIT = 1.0
-AFTER_SAVE_WAIT = 1.0
-AFTER_CLOSE_WAIT = 1.5
+UI_RESET_WAIT = 0.2          # Was 0.3 — Escape key is instant
+NOTEPAD_OPEN_WAIT_MAX = 12   # Total seconds (poll loop converts to 60 ticks of 0.2s)
+PASTE_WAIT = 0.5             # Was 0.8 — paste verification follows immediately
+SAVE_DIALOG_WAIT = 1.5       # Was 3.0 — only used as fallback after wait_for_save_dialog times out
+POST_ENTER_WAIT = 1.0        # DO NOT CHANGE — required for overwrite dialog appearance
+AFTER_SAVE_WAIT = 0.6        # Was 1.0 — file existence check follows
+AFTER_CLOSE_WAIT = 0.8       # Was 1.5 — Ctrl+W is fast on Notepad
 
 # =========================
 # RETRIES

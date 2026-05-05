@@ -24,6 +24,8 @@ _icon_cache: dict[str, Any] = {
     "reference_crop": None,
 }
 
+_dpi_scale_cache: tuple[float, float] | None = None
+
 
 def get_active_window_title() -> str:
     try:
@@ -34,8 +36,29 @@ def get_active_window_title() -> str:
     except Exception:
         return ""
 
+def move_mouse_to_safe_position() -> None:
+    """
+    Move the mouse away from PyAutoGUI fail-safe corners.
+
+    Fail-safe remains enabled globally. It is disabled only during this recovery
+    move because PyAutoGUI may refuse to move if the cursor is already inside
+    a fail-safe corner.
+    """
+    original_failsafe = pyautogui.FAILSAFE
+
+    try:
+        pyautogui.FAILSAFE = False
+        screen_w, screen_h = pyautogui.size()
+        pyautogui.moveTo(screen_w // 2, screen_h // 2, duration=0.1)
+        time.sleep(0.1)
+    finally:
+        pyautogui.FAILSAFE = original_failsafe
 
 def get_dpi_scale() -> tuple[float, float]:
+    global _dpi_scale_cache
+    if _dpi_scale_cache is not None:
+        return _dpi_scale_cache
+
     screen_w, screen_h = pyautogui.size()
     shot = pyautogui.screenshot()
     shot_w, shot_h = shot.size
@@ -46,7 +69,8 @@ def get_dpi_scale() -> tuple[float, float]:
     if scale_x != 1.0 or scale_y != 1.0:
         logging.info(f"DPI scale: ({scale_x:.2f}, {scale_y:.2f})")
 
-    return scale_x, scale_y
+    _dpi_scale_cache = (scale_x, scale_y)
+    return _dpi_scale_cache
 
 
 def capture_icon_crop(
@@ -81,6 +105,7 @@ def icon_still_at_cached_location(
     y: int,
     scale_x: float,
     scale_y: float,
+    target_description: str = "",
 ) -> bool:
     try:
         current_crop = capture_icon_crop(x, y, scale_x, scale_y)
@@ -110,11 +135,11 @@ def icon_still_at_cached_location(
             return True
 
         if diff < CACHE_TOLERANT_DIFF_THRESHOLD:
-            logging.info(
-                f"Cache accepted by tolerant local threshold, diff={diff:.1f}. "
-                "Launch validation will confirm result."
+            logging.warning(
+                f"Cache diff is suspicious, diff={diff:.1f}. "
+                "Invalidating cache and forcing re-grounding."
             )
-            return True
+            return False
 
         if USE_VLM_CACHE_CONFIRMATION:
             logging.info(f"Cache diff {diff:.1f} high — confirming with VLM")
@@ -132,7 +157,7 @@ def icon_still_at_cached_location(
 
             crop = shot.crop((x1, y1, x2, y2))
 
-            response = call_gemini_vision(CACHE_CHECK_PROMPT, crop)
+            response = call_gemini_vision(CACHE_CHECK_PROMPT.format(target_description=target_description), crop)
             result = parse_vlm_json(response)
 
             found = bool(result.get("found", False))
@@ -184,16 +209,31 @@ def invalidate_icon_cache() -> None:
 def show_desktop() -> None:
     """Minimize windows without toggling them back open."""
     logging.info("Minimizing all windows...")
+    exit_desktop_overlays()
     pyautogui.hotkey("win", "m")
     time.sleep(DESKTOP_WAIT)
 
 
 def reset_ui_state() -> None:
-    screen_width, screen_height = pyautogui.size()
-    pyautogui.moveTo(screen_width - 200, screen_height // 2, duration=0.2)
+    move_mouse_to_safe_position()
+    pyautogui.press("escape")
     time.sleep(UI_RESET_WAIT)
-    pyautogui.click()
-    time.sleep(0.2)
+    pyautogui.press("escape")
+    time.sleep(UI_RESET_WAIT)
+
+
+def exit_desktop_overlays() -> None:
+    """
+    Dismiss transient Windows overlays before desktop grounding/clicking.
+
+    Task View can leave pygetwindow reporting the selected app title instead of
+    "Task View", so Escape is sent unconditionally. This is harmless on the
+    desktop and avoids clicking task thumbnails as if they were desktop icons.
+    """
+    move_mouse_to_safe_position()
+    for _ in range(2):
+        pyautogui.press("escape")
+        time.sleep(0.2)
 
 
 def ensure_desktop_clear() -> bool:
@@ -205,8 +245,9 @@ def ensure_desktop_clear() -> bool:
     """
     logging.info("Showing desktop for grounding...")
 
+    exit_desktop_overlays()
     pyautogui.hotkey("win", "m")
-    time.sleep(1.0)
+    time.sleep(0.6)  # Was 1.0 — Win+M animation completes in ~400ms
 
     active_title = get_active_window_title().strip()
 
@@ -216,14 +257,25 @@ def ensure_desktop_clear() -> bool:
 
     logging.info(f"Active window after Win+M: '{active_title}'")
 
+    exit_desktop_overlays()
     pyautogui.hotkey("win", "d")
-    time.sleep(1.0)
+    time.sleep(0.6)
 
     active_title = get_active_window_title().strip()
 
     if not active_title or active_title.lower() in {"program manager", "desktop"}:
         logging.info("Desktop clear after fallback Win+D")
         return True
+
+    if active_title.lower() == "task view":
+        logging.info("Task View active after desktop shortcut — dismissing and retrying Win+M")
+        exit_desktop_overlays()
+        pyautogui.hotkey("win", "m")
+        time.sleep(0.6)
+        active_title = get_active_window_title().strip()
+        if not active_title or active_title.lower() in {"program manager", "desktop"}:
+            logging.info("Desktop clear after Task View dismissal")
+            return True
 
     logging.warning(f"Could not confirm desktop is clear. Active window: '{active_title}'")
     return False

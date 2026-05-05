@@ -8,13 +8,15 @@ __pycache__/
 *.pyo
 *.pyd
 
-# Runtime files
-automation.log
-screen.png
-unsaved_note_counter.txt
+# Runtime files (anywhere in tree — config uses relative paths so artifacts
+# can land inside src/ if uv is run from there)
+**/automation.log
+**/screen.png
+**/unsaved_note_counter.txt
 
-# Generated screenshots
-failure_screenshots/*.png
+# Generated screenshots (anywhere in tree)
+**/annotated_screenshots/
+**/failure_screenshots/*.png
 !failure_screenshots/.gitkeep
 
 # Optional local templates

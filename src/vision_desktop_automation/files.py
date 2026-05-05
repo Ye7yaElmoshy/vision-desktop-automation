@@ -7,8 +7,10 @@ from typing import Any
 import cv2
 import numpy as np
 import pyautogui
+from PIL import Image
 
 from vision_desktop_automation.config import (
+    ANNOTATED_SCREENSHOT_DIR,
     FAILURE_SCREENSHOT_DIR,
     LOG_FILE,
     OUTPUT_DIR,
@@ -48,6 +50,7 @@ def setup_logging() -> None:
 
 def ensure_runtime_dirs() -> None:
     FAILURE_SCREENSHOT_DIR.mkdir(exist_ok=True)
+    ANNOTATED_SCREENSHOT_DIR.mkdir(exist_ok=True)
 
     try:
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -66,12 +69,18 @@ def save_debug_screenshot(label: str) -> None:
         logging.warning(f"Could not save debug screenshot: {e}")
 
 
-def save_annotated_screenshot(label: str, click_x: int, click_y: int) -> None:
+def save_annotated_screenshot(
+    label: str,
+    click_x: int,
+    click_y: int,
+    image: Image.Image | None = None,
+) -> None:
     try:
         timestamp = time.strftime("%Y%m%d_%H%M%S")
-        path = FAILURE_SCREENSHOT_DIR / f"annotated_{label}_{timestamp}.png"
+        path = ANNOTATED_SCREENSHOT_DIR / f"{label}_{timestamp}.png"
 
-        img = cv2.cvtColor(np.array(pyautogui.screenshot()), cv2.COLOR_RGB2BGR)
+        source = image if image is not None else pyautogui.screenshot()
+        img = cv2.cvtColor(np.array(source.convert("RGB")), cv2.COLOR_RGB2BGR)
 
         cv2.circle(img, (click_x, click_y), 20, (0, 255, 0), 3)
         cv2.circle(img, (click_x, click_y), 5, (0, 255, 0), -1)

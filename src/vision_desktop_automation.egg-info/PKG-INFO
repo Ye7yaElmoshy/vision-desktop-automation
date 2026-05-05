@@ -11,3 +11,412 @@ Requires-Dist: pyperclip
 Requires-Dist: requests
 Requires-Dist: pillow
 Requires-Dist: pygetwindow
+
+# Vision-Based Desktop Automation with Dynamic Icon Grounding
+
+## Objective
+
+This project automates Windows Notepad using vision-based desktop grounding.
+
+The system dynamically locates the Notepad desktop shortcut regardless of its position on the Windows desktop, opens Notepad, writes posts fetched from the JSONPlaceholder API, saves each post as a text file, closes Notepad, and repeats the process.
+
+The assignment intentionally uses a vision-heavy approach even though Notepad could be launched more simply. The goal is to demonstrate scalable GUI grounding, not task-specific shortcuts.
+
+---
+
+## Architecture Overview
+
+```mermaid
+flowchart TD
+    A[Screenshot Capture] --> B{Icon Cache Valid?}
+    B -->|Yes, pixel diff low| C[Use Cached Position]
+    B -->|No or first run| D[Planner: Propose Candidate Regions]
+    D --> E[For each region: Crop image]
+    E --> F[Grounder: Locate icon in crop]
+    F --> G{Confidence high enough?}
+    G -->|Yes| H[Verifier: Confirm icon identity]
+    G -->|No, depth < max| I[Recursive: Re-plan inside crop]
+    I --> E
+    H --> J{Verified?}
+    J -->|Yes| K[Combined Score: region + grounding + box]
+    J -->|No| L[Reject candidate]
+    K --> M[Best candidate selected]
+    M --> N[Update icon cache]
+    N --> O[Double-click target]
+
+    F -.VLM error.-> P[Template Matching Fallback]
+    P --> Q{Score >= threshold?}
+    Q -->|Yes| O
+    Q -->|No| R[Raise: detection failed]
+
+    C --> O
+
+    style D fill:#e1f5ff
+    style F fill:#fff4e1
+    style H fill:#e1ffe1
+    style P fill:#ffe1e1
+```
+
+**Architecture overview:** The system uses a hierarchical Planner → Grounder → Verifier pipeline (inspired by ScreenSeekeR, [arxiv 2504.07981](https://arxiv.org/pdf/2504.07981)), with template matching as a graceful-degradation fallback when the VLM is unavailable.
+
+---
+
+## Features
+
+- Planner-guided VLM grounding using Gemini Vision.
+- Candidate-region proposal from full desktop screenshots.
+- Grounder refinement inside cropped candidate regions.
+- Dynamic icon detection regardless of icon position.
+- Handles cluttered desktops with many icons.
+- Handles different icon placements such as top-left, center, bottom-left, and bottom-right.
+- Expands tight planner regions to preserve icon and label context.
+- Uses cached coordinates after the first successful detection to reduce repeated VLM calls.
+- Locally validates cached coordinates using pixel similarity.
+- Direct full-screen VLM fallback.
+- Optional OpenCV template-matching fallback.
+- Saves annotated screenshots of detections.
+- Verifies all generated output files.
+
+---
+
+## Requirements
+
+- Windows 10/11.
+- 1920x1080 resolution recommended.
+- Python 3.10+.
+- A visible Notepad shortcut on the desktop.
+- A Gemini API key stored as an environment variable.
+
+---
+
+## Setup
+
+Install `uv`:
+
+```powershell
+pip install uv
+```
+
+Install project dependencies:
+
+```powershell
+uv sync
+```
+
+Set your Gemini API key in PowerShell:
+
+```powershell
+$env:GEMINI_API_KEY="your_real_gemini_api_key_here"
+```
+
+Run the automation:
+
+```powershell
+uv run vision-automation
+```
+
+Alternative run command:
+
+```powershell
+uv run python -m vision_desktop_automation.main
+```
+
+---
+
+## Automation Workflow
+
+1. Show the desktop.
+2. Capture a fresh screenshot.
+3. Locate the Notepad desktop shortcut using planner-guided VLM grounding.
+4. Double-click the detected icon coordinates.
+5. Validate that Notepad launched.
+6. Fetch the first 10 posts from JSONPlaceholder.
+7. Paste each post into Notepad using this format:
+
+```text
+Title: {title}
+
+{body}
+```
+
+8. Save each post as `post_{id}.txt`.
+9. Store the files inside `Desktop/tjm-project`.
+10. Close Notepad.
+11. Repeat the process for all 10 posts.
+12. Verify that all generated files exist and contain the expected title.
+
+---
+
+## Grounding Approach
+
+The primary grounding method is inspired by ScreenSeekeR-style cascaded visual search.
+
+The system separates the visual search process into two main roles: a planner and a grounder.
+
+### 1. Planner
+
+The planner receives the full desktop screenshot and proposes candidate regions where the Notepad icon is likely to exist.
+
+Instead of asking the model to directly click from the full screenshot, the planner narrows the search area first.
+
+### 2. Grounder
+
+The grounder receives a cropped candidate region and returns:
+
+- A bounding box around the likely target.
+- A click point at the icon center.
+- Confidence values.
+- Label and visual match scores.
+
+This makes the system more flexible than hardcoded coordinates or simple template matching.
+
+---
+
+## Why This Approach — ScreenSeekeR Inspiration
+
+This implementation is inspired by **ScreenSeekeR** ([arxiv 2504.07981](https://arxiv.org/pdf/2504.07981)), which proposes hierarchical visual grounding for GUI elements.
+
+**Architecture summary:** The pipeline runs three stages — *Planner* (proposes candidate regions on the full screenshot) → *Grounder* (returns box + click point inside each cropped region) → *Verifier* (confirms the icon identity on a tight crop). The Planner→Grounder step recurses if confidence is below threshold, and a combined score across planner score, grounder confidence, and proposal score picks the final candidate.
+
+### What we adopted from the paper
+
+- **Planner → Grounder → Verifier pipeline** matching the paper's three-stage architecture.
+- **Hierarchical region search** — the paper's "coarse-to-fine localization": narrow the search area before grounding, instead of asking the VLM to click directly from a 1920×1080 image.
+- **Recursive refinement** when grounder confidence is below threshold — the planner is re-invoked on the current crop to produce sub-regions, and the search continues with reduced visual scope.
+- **Combined scoring across multiple signals** — `combined_score = w₁·grounder_confidence + w₂·planner_region_score + w₃·proposal_score` (where `proposal_score` itself fuses confidence, label_match, and visual_match). This is more robust than ranking by a single confidence number.
+
+### Where we diverged and why
+
+- **Local OpenCV template matching as a third fallback layer.** The paper assumes the VLM is always reachable; in practice Gemini returns 5xx/timeouts often enough that a fully offline path matters for a deterministic interview demo.
+- **Icon position cache with pixel-diff validation.** The paper doesn't address temporal reuse — but in our workflow the same icon is clicked 10× in a row, so a verified cached coordinate skips the entire VLM cascade for posts 2–10. Pixel-diff against a stored reference crop catches stale-cache cases.
+- **Gemini Flash instead of larger models.** A larger VLM would likely improve single-call accuracy; Flash was chosen for cost and latency, with the planner-grounder hierarchy compensating for the smaller model's weaker direct grounding.
+- **Partial JSON recovery for VLM output errors.** Production hardening — the VLM occasionally emits markdown fences or truncated JSON; a regex-based field extractor recovers the click coordinates rather than failing the whole call.
+
+### Why hierarchical beats flat grounding
+
+- A single VLM call asking "where is icon X?" on a 1920×1080 desktop is unreliable for small icons — the icon may occupy <0.5% of the image area, and the model's spatial precision degrades with image size.
+- Splitting into regions reduces visual complexity per call: each grounder call sees ~10% of the desktop, where the icon is a much larger fraction of the view.
+- Recursion handles cases where the planner's first split was wrong — instead of failing, the system re-plans within the current crop and tries again. This is what makes the system tolerant of unexpected pop-ups, shifted icons, and cluttered desktops without prior knowledge of what the desktop looks like.
+
+---
+
+## Fallback Strategy
+
+The fallback hierarchy is:
+
+1. Cached coordinates if locally valid.
+2. Planner-guided VLM grounding.
+3. Direct full-screen VLM grounding.
+4. Template matching fallback if local templates are available.
+5. Clean failure with diagnostic screenshot and logs.
+
+Template matching is included only as graceful degradation. The primary method remains planner-guided VLM grounding.
+
+---
+
+## Cache Strategy
+
+After the first successful detection, the system stores the Notepad coordinates and a small reference crop around the icon.
+
+For later posts, the system checks whether the icon is still at the cached location using local pixel similarity.
+
+If the cache is valid, the system reuses the stored coordinates instead of calling Gemini again. This reduces:
+
+- API calls.
+- Runtime.
+- Risk of Gemini 503 errors.
+- Cost and latency.
+
+If the cache is invalid, the system reruns visual grounding.
+
+---
+
+## Error Handling
+
+The system includes handling for:
+
+- Icon not found.
+- Gemini API timeout or 503 errors.
+- Invalid or partial JSON returned by the VLM.
+- Save dialog delays.
+- Existing output files.
+- Notepad launch validation.
+- Leftover Notepad windows.
+- Failed saves.
+- Missing or empty output files.
+
+The script also saves debug screenshots in `failure_screenshots/` when failures occur.
+
+---
+
+## Detection Examples
+
+The following screenshots are stored in `docs/screenshots/`.
+
+### Top-left annotated detection
+
+![Top-left annotated detection](docs/screenshots/Top%20left%20ANNOTATED%20screenshot.jpeg)
+
+### Top-left popup confirmation
+
+![Top-left popup confirmation](docs/screenshots/Top%20left%20POP-UP%20screenshot.jpeg)
+
+### Center annotated detection
+
+![Center annotated detection](docs/screenshots/Center%20ANNOTATED%20screenshot.jpeg)
+
+### Center popup confirmation
+
+![Center popup confirmation](docs/screenshots/Center%20POP-UP%20screenshot.jpeg)
+
+### Bottom-left annotated detection 1
+
+![Bottom-right annotated detection 1](docs/screenshots/Bottom%20left%201%20ANNOTATED%20screenshot.jpeg)
+
+### Bottom-left annotated detection 2
+
+![Bottom-right annotated detection 2](docs/screenshots/Bottom%20left%202%20ANNOTATED%20screenshot.jpeg)
+
+### Bottom-right popup confirmation
+
+![Bottom-right popup confirmation](docs/screenshots/Bottom%20Right%20POP-UP%20screenshot.jpeg)
+
+---
+
+## Output
+
+Generated files are saved to:
+
+```text
+Desktop/tjm-project/
+```
+
+Expected output:
+
+```text
+post_1.txt
+post_2.txt
+post_3.txt
+post_4.txt
+post_5.txt
+post_6.txt
+post_7.txt
+post_8.txt
+post_9.txt
+post_10.txt
+```
+
+Each file contains:
+
+```text
+Title: {title}
+
+{body}
+```
+
+---
+
+## Project Structure
+
+```text
+vision-desktop-automation/
+│
+├── src/
+│   └── vision_desktop_automation/
+│       ├── __init__.py
+│       ├── main.py
+│       ├── config.py
+│       ├── prompts.py
+│       ├── api.py
+│       ├── files.py
+│       ├── geometry.py
+│       ├── vlm_client.py
+│       ├── grounding.py
+│       ├── template_matching.py
+│       ├── desktop.py
+│       └── notepad.py
+│
+├── tests/
+│   ├── __init__.py
+│   ├── test_geometry.py
+│   ├── test_api.py
+│   └── test_files.py
+│
+├── templates/          ← OpenCV template images (already exists)
+│
+├── docs/
+│   ├── screenshots/    ← (already exists)
+│   └── REFACTOR_NOTES.md
+│
+├── logs/               ← runtime logs (gitignored)
+├── output/             ← post_{id}.txt files (gitignored)
+├── failure_screenshots/ ← (already exists, move to root only)
+│
+├── .env.example        ← GEMINI_API_KEY=your_key_here
+├── .gitignore
+├── pyproject.toml      ← replaces egg-info mess
+├── requirements.txt
+└── README.md
+```
+
+---
+
+## Configuration
+
+The Gemini API key is not hardcoded in the source code.
+
+The code reads it from the environment:
+
+```python
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+```
+
+Example PowerShell setup:
+
+```powershell
+$env:GEMINI_API_KEY="your_real_gemini_api_key_here"
+```
+
+A `.env.example` file is included only as a safe placeholder:
+
+```env
+GEMINI_API_KEY=your_gemini_api_key_here
+```
+
+---
+
+## Known Limitations
+
+- First-time detection depends on Gemini API availability.
+- Gemini may occasionally return `503` or timeout.
+- Template matching fallback requires local template images in the `templates/` folder.
+- The project is designed for Windows desktop automation.
+- The project was mainly tested on 1920x1080 resolution.
+- Very cluttered desktops may increase grounding latency.
+- If the icon is fully hidden behind another window, the system cannot visually ground it until the desktop is visible.
+
+---
+
+## Future Improvements
+
+- Split the script into separate modules:
+  - `grounding.py`
+  - `automation.py`
+  - `api.py`
+  - `utils.py`
+- Add CLI arguments for arbitrary target descriptions.
+- Add support for grounding any desktop icon or GUI button.
+- Add unit tests for JSON parsing and coordinate conversion.
+- Improve screenshot annotation placement near screen edges.
+- Add automatic screenshot naming by detected region.
+- Add more robust local fallback methods for API outages.
+
+---
+
+## Further Notes
+
+This project uses planner-guided VLM grounding because the assignment focuses on scalable visual grounding, not simply opening Notepad.
+
+The system can be extended to other desktop icons or GUI elements by changing the target description. The planner-grounder design is intentionally more general than hardcoded coordinates or template matching.
+
+Template matching is included as a backup, but it is not the primary method because it is less flexible across different themes, icon sizes, and Windows versions.

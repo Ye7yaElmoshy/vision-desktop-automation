@@ -8,8 +8,10 @@ Important:
 - Set GEMINI_API_KEY as an environment variable before running.
 """
 
+import argparse
 import logging
 import time
+from pathlib import Path
 
 import pyautogui
 
@@ -32,6 +34,38 @@ pyautogui.FAILSAFE = True
 pyautogui.PAUSE = 0.15
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Vision-based desktop automation with VLM grounding",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python -m vision_desktop_automation --target "Chrome browser icon"
+  python -m vision_desktop_automation --target "VS Code" --posts 5
+  python -m vision_desktop_automation --target "Calculator app" --output-dir Desktop/calc-test
+        """,
+    )
+    parser.add_argument(
+        "--target",
+        type=str,
+        default=None,
+        help="Target icon description (e.g., 'Chrome browser icon'). If not provided, uses config default.",
+    )
+    parser.add_argument(
+        "--posts",
+        type=int,
+        default=None,
+        help="Number of posts to process (default: 10)",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=None,
+        help="Output directory path (default: Desktop/tjm-project)",
+    )
+    return parser.parse_args()
+
+
 def validate_environment() -> None:
     if not GEMINI_API_KEY:
         raise RuntimeError(
@@ -42,11 +76,32 @@ def validate_environment() -> None:
 
 
 def main() -> None:
+    args = parse_args()
+
+    # Apply CLI overrides to config before anything else reads those values
+    import vision_desktop_automation.config as cfg
+
+    if args.target:
+        cfg.TARGET_DESCRIPTION = args.target
+
+    if args.posts:
+        cfg.POST_LIMIT = args.posts
+
+    if args.output_dir:
+        cfg.OUTPUT_DIR = Path(args.output_dir).expanduser().resolve()
+
     setup_logging()
     ensure_runtime_dirs()
 
+    if args.target:
+        logging.info(f"Target override: {args.target}")
+    if args.posts:
+        logging.info(f"Posts limit override: {args.posts}")
+    if args.output_dir:
+        logging.info(f"Output directory override: {cfg.OUTPUT_DIR}")
+
     logging.info("Starting in 8 seconds — do not touch mouse or keyboard")
-    logging.info("Make sure the Notepad shortcut is visible on the desktop")
+    logging.info(f"Target: {cfg.TARGET_DESCRIPTION}")
     time.sleep(8)
 
     try:
@@ -72,6 +127,15 @@ def main() -> None:
                 reset_ui_state()
             except Exception:
                 pass
+
+    # Final cleanup — `close_all_notepad_windows` is normally invoked at the
+    # start of the next iteration's `open_notepad`, but the last post has no
+    # next iteration, so any leftover Notepad would be left running.
+    try:
+        from vision_desktop_automation.notepad import close_all_notepad_windows
+        close_all_notepad_windows()
+    except Exception as e:
+        logging.warning(f"Final Notepad cleanup failed: {e}")
 
     logging.info("=" * 60)
 

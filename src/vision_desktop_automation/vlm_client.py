@@ -16,9 +16,41 @@ from vision_desktop_automation.config import (
     VLM_MODEL,
 )
 
+RETRYABLE_HTTP_STATUSES = {500, 502, 503, 504}
 
-def image_to_base64(image: Image.Image, max_width: int = 1280) -> str:
-    """Convert a PIL image to base64 JPEG for Gemini Vision."""
+
+class NonRetryableGeminiAPIError(RuntimeError):
+    """Raised for Gemini HTTP errors that should not be retried locally."""
+
+
+def _response_error_detail(response: requests.Response) -> str:
+    """Extract the useful Gemini error message without dumping a huge body."""
+    try:
+        data = response.json()
+    except ValueError:
+        text = response.text.strip()
+        return text[:500] if text else (response.reason or "no response body")
+
+    error = data.get("error") if isinstance(data, dict) else None
+    if isinstance(error, dict):
+        status = str(error.get("status", "")).strip()
+        message = str(error.get("message", "")).strip()
+        if status and message:
+            return f"{status}: {message}"[:500]
+        if message:
+            return message[:500]
+        if status:
+            return status[:500]
+
+    return json.dumps(data, sort_keys=True)[:500]
+
+
+def image_to_base64(image: Image.Image, max_width: int = 1280) -> tuple[str, str]:
+    """Convert a PIL image to base64 for Gemini Vision. Returns (data, mime_type).
+
+    Small images (≤200px wide) are encoded as lossless PNG to avoid JPEG block
+    artifacts that can confuse the VLM on icon/crop inputs.
+    """
     import io
 
     if image.width > max_width:
@@ -26,8 +58,14 @@ def image_to_base64(image: Image.Image, max_width: int = 1280) -> str:
         image = image.resize((max_width, int(image.height * ratio)), Image.LANCZOS)
 
     buf = io.BytesIO()
-    image.save(buf, format="JPEG", quality=92)
-    return base64.standard_b64encode(buf.getvalue()).decode("utf-8")
+    if image.width <= 200 and image.height <= 200:
+        image.save(buf, format="PNG")
+        mime_type = "image/png"
+    else:
+        image.save(buf, format="JPEG", quality=92)
+        mime_type = "image/jpeg"
+
+    return base64.standard_b64encode(buf.getvalue()).decode("utf-8"), mime_type
 
 
 def call_gemini_vision(prompt: str, image: Image.Image) -> str:
@@ -37,14 +75,14 @@ def call_gemini_vision(prompt: str, image: Image.Image) -> str:
             "GEMINI_API_KEY is not set. Set it as an environment variable before running."
         )
 
-    b64 = image_to_base64(image)
+    b64, mime_type = image_to_base64(image)
     url = GEMINI_API_URL.format(model=VLM_MODEL)
 
     payload = {
         "contents": [
             {
                 "parts": [
-                    {"inline_data": {"mime_type": "image/jpeg", "data": b64}},
+                    {"inline_data": {"mime_type": mime_type, "data": b64}},
                     {"text": prompt},
                 ]
             }
@@ -66,11 +104,19 @@ def call_gemini_vision(prompt: str, image: Image.Image) -> str:
         try:
             response = requests.post(url, json=payload, headers=headers, timeout=45)
 
-            if response.status_code in (500, 502, 503, 504):
+            if response.status_code in RETRYABLE_HTTP_STATUSES:
                 wait = min(45, (2 ** attempt) * 3 + random.uniform(1.0, 4.0))
                 logging.warning(f"Gemini {response.status_code} — retry in {wait:.1f}s")
                 time.sleep(wait)
                 continue
+
+            if response.status_code >= 400:
+                detail = _response_error_detail(response)
+                last_error = f"HTTP {response.status_code}: {detail}"
+                logging.warning(f"Gemini request failed: {last_error}")
+                raise NonRetryableGeminiAPIError(
+                    f"Gemini API failed after {attempt} attempt(s). Last: {last_error}"
+                )
 
             response.raise_for_status()
 
@@ -86,6 +132,9 @@ def call_gemini_vision(prompt: str, image: Image.Image) -> str:
             last_error = "timeout"
             logging.warning(f"Gemini timeout attempt {attempt}")
             time.sleep(2 ** attempt)
+
+        except NonRetryableGeminiAPIError:
+            raise
 
         except Exception as e:
             last_error = e
@@ -136,34 +185,6 @@ def parse_vlm_json(response_text: str) -> dict[str, Any]:
 
     raise ValueError(f"Invalid JSON unrecoverable: {cleaned[:180]}")
 
-
-def validate_grounding_result(result: dict[str, Any]) -> bool:
-    """Validate a simple point-based grounding response."""
-    if not result.get("found", False):
-        return False
-
-    x = float(result.get("click_x_pct", 0))
-    y = float(result.get("click_y_pct", 0))
-
-    if x > 1.0:
-        x = x / 100.0
-        result["click_x_pct"] = x
-        logging.warning(f"Auto-normalized click_x_pct from percentage to fraction: {x:.3f}")
-
-    if y > 1.0:
-        y = y / 100.0
-        result["click_y_pct"] = y
-        logging.warning(f"Auto-normalized click_y_pct from percentage to fraction: {y:.3f}")
-
-    if not (0.01 <= x <= 0.99) or not (0.01 <= y <= 0.99):
-        logging.warning(f"Coordinates out of range: ({x}, {y})")
-        return False
-
-    if x == 0.0 and y == 0.0:
-        logging.warning("Hallucination: found=true with (0,0)")
-        return False
-
-    return True
 
 
 def recover_planner_regions_from_text(text: str) -> dict[str, Any]:
