@@ -49,7 +49,7 @@ def move_mouse_to_safe_position() -> None:
     try:
         pyautogui.FAILSAFE = False
         screen_w, screen_h = pyautogui.size()
-        pyautogui.moveTo(screen_w // 2, screen_h // 2, duration=0.1)
+        pyautogui.moveTo(screen_w - 20, screen_h - 20, duration=0)
         time.sleep(0.1)
     finally:
         pyautogui.FAILSAFE = original_failsafe

@@ -16,7 +16,6 @@ from vision_desktop_automation.config import (
     SAVE_DIALOG_WAIT,
     SAVE_RETRIES,
     SCREENSHOT_PATH,
-    TARGET_DESCRIPTION,
     USE_TEMPLATE_MATCHING_FALLBACK,
     VERIFICATION_SKIP_CONFIDENCE,
 )
@@ -47,6 +46,11 @@ from vision_desktop_automation.grounding import (
 )
 
 from vision_desktop_automation.template_matching import template_match_icon
+
+
+def _raise_if_failsafe(e: Exception) -> None:
+    if isinstance(e, pyautogui.FailSafeException):
+        raise
 
 
 def is_visible_sane_window(w: Any) -> bool:
@@ -218,6 +222,7 @@ def close_all_notepad_windows():
 
             logging.info(f"Leftover Notepad saved and closed as unsaved_note_{note_num}.txt")
         except Exception as e:
+            _raise_if_failsafe(e)
             logging.warning(f"Could not save/close leftover Notepad: {e}")
             try:
                 if hasattr(w, "close"):
@@ -300,7 +305,7 @@ def open_notepad():
             if cached_position is not None:
                 x, y = cached_position
                 logging.info(f"Checking icon cache: ({x}, {y})")
-                if not icon_still_at_cached_location(x, y, scale_x, scale_y, TARGET_DESCRIPTION):
+                if not icon_still_at_cached_location(x, y, scale_x, scale_y, cfg.TARGET_DESCRIPTION):
                     logging.warning("Icon moved or changed — invalidating cache")
                     invalidate_icon_cache()
                     raise RuntimeError("Cache invalidated")
@@ -317,7 +322,7 @@ def open_notepad():
                 try:
                     x_shot, y_shot, confidence = planner_guided_ground_icon(
                         pil_image,
-                        TARGET_DESCRIPTION,
+                        cfg.TARGET_DESCRIPTION,
                     )
                 except Exception as vlm_error:
                     logging.warning(f"Planner-guided VLM grounding failed: {vlm_error}")
@@ -352,7 +357,7 @@ def open_notepad():
                         pil_image,
                         x_shot / pil_image.width,
                         y_shot / pil_image.height,
-                        TARGET_DESCRIPTION,
+                        cfg.TARGET_DESCRIPTION,
                     ):
                         raise ValueError("Wrong icon detected after planner-guided grounding")
                 else:
@@ -389,6 +394,41 @@ def open_notepad():
                     logging.warning(f"Wrong app opened: '{active_title}'")
                     dismiss_unexpected_window(active_title)
 
+                # GUI fallback: try selecting the icon and pressing Enter,
+                # then retry with a slight offset double-click.
+                try:
+                    logging.info("Attempting GUI fallback: select icon and press Enter")
+                    move_mouse_to_safe_position()
+                    pyautogui.click(x, y)
+                    time.sleep(0.2)
+                    pyautogui.press("enter")
+                    # Poll briefly for Notepad window
+                    for tick in range(poll_ticks):
+                        time.sleep(0.2)
+                        if get_visible_notepad_windows():
+                            elapsed_s = (tick + 1) * 0.2
+                            logging.info(f"Notepad opened via GUI fallback after {elapsed_s:.1f}s")
+                            increment_cache_hits()
+                            return
+                except Exception as gui_e:
+                    _raise_if_failsafe(gui_e)
+                    logging.warning(f"GUI fallback failed: {gui_e}")
+
+                try:
+                    logging.info("Retrying double-click with slight offset")
+                    move_mouse_to_safe_position()
+                    pyautogui.doubleClick(x + 5, y + 5, interval=0.25)
+                    for tick in range(poll_ticks):
+                        time.sleep(0.2)
+                        if get_visible_notepad_windows():
+                            elapsed_s = (tick + 1) * 0.2
+                            logging.info(f"Notepad opened after offset double-click in {elapsed_s:.1f}s")
+                            increment_cache_hits()
+                            return
+                except Exception as dc_e:
+                    _raise_if_failsafe(dc_e)
+                    logging.warning(f"Offset double-click failed: {dc_e}")
+
                 invalidate_icon_cache()
                 raise RuntimeError(f"Notepad not launched. Active: '{active_title}'")
 
@@ -396,6 +436,7 @@ def open_notepad():
             return
 
         except Exception as e:
+            _raise_if_failsafe(e)
             last_error = e
             logging.warning(f"Open Notepad attempt {attempt} failed: {e}")
             save_debug_screenshot(f"icon_detection_attempt_{attempt}")
@@ -482,6 +523,7 @@ def save_file(post_id: int):
             raise RuntimeError(f"File not found or empty: {full_path}")
 
         except Exception as e:
+            _raise_if_failsafe(e)
             last_error = e
             logging.warning(f"Save attempt {attempt} failed: {e}")
             save_debug_screenshot(f"save_attempt_{attempt}_post_{post_id}")
@@ -540,10 +582,12 @@ def close_notepad():
                 w.close()
                 time.sleep(0.3)
             except Exception as e:
+                _raise_if_failsafe(e)
                 logging.warning(f"Could not close hidden Notepad window: {e}")
 
 
-def process_post(post: dict[str, Any]):
+def process_post_notepad(post: dict[str, Any]):
+    """Notepad workflow: open, paste, save, close."""
     logging.info("=" * 60)
     logging.info(f"Processing post {post['id']} / {cfg.POST_LIMIT}")
     open_notepad()
@@ -551,4 +595,77 @@ def process_post(post: dict[str, Any]):
     save_file(post["id"])
     close_notepad()
     logging.info(f"Finished post {post['id']}")
+
+
+def process_post_generic(post: dict[str, Any]):
+    """Generic workflow: just find and open the target app."""
+    logging.info("=" * 60)
+    logging.info("Processing generic app launch — opening target app only")
+    ensure_desktop_clear()
+    reset_ui_state()
+
+    scale_x, scale_y = get_dpi_scale()
+    last_error = None
+
+    for attempt in range(1, ICON_DETECTION_RETRIES + 1):
+        try:
+            logging.info(f"Finding and opening target app — attempt {attempt}")
+            ensure_desktop_clear()
+            time.sleep(0.5)
+
+            pil_image = pyautogui.screenshot()
+            pil_image.save(SCREENSHOT_PATH)
+
+            try:
+                x_shot, y_shot, confidence = planner_guided_ground_icon(
+                    pil_image,
+                    cfg.TARGET_DESCRIPTION,
+                )
+            except Exception as vlm_error:
+                logging.warning(f"VLM grounding failed: {vlm_error}")
+
+                if not USE_TEMPLATE_MATCHING_FALLBACK:
+                    raise
+
+                logging.info("Trying local template-matching fallback...")
+                template_result = template_match_icon(pil_image)
+
+                if template_result is None:
+                    raise RuntimeError(
+                        f"VLM grounding failed and template fallback found no reliable match. "
+                        f"Original VLM error: {vlm_error}"
+                    )
+
+                x_shot, y_shot, confidence = template_result
+                logging.info(
+                    f"Template fallback selected candidate at "
+                    f"({x_shot},{y_shot}) with score={confidence:.3f}"
+                )
+
+            x = int(x_shot * scale_x)
+            y = int(y_shot * scale_y)
+            logging.info(f"Grounded: shot=({x_shot},{y_shot}) → screen=({x},{y})")
+            save_annotated_screenshot(f"generic_attempt_{attempt}", x, y, pil_image)
+
+            logging.info(f"Double-clicking target at ({x}, {y})")
+            move_mouse_to_safe_position()
+            pyautogui.doubleClick(x, y, interval=0.2)
+            move_mouse_to_safe_position()
+
+            logging.info("Target app launched")
+            time.sleep(2)
+            logging.info(f"Finished post {post['id']}")
+            return
+
+        except Exception as e:
+            _raise_if_failsafe(e)
+            last_error = e
+            logging.warning(f"Open app attempt {attempt} failed: {e}")
+            save_debug_screenshot(f"generic_attempt_{attempt}")
+            reset_ui_state()
+            wait = 10 if "429" in str(e) else 1
+            logging.info(f"Waiting {wait}s before retry")
+            time.sleep(wait)
+
+    raise RuntimeError(f"Failed to open target app after {ICON_DETECTION_RETRIES} retries. Last: {last_error}")
 

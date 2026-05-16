@@ -19,3 +19,5 @@ src/vision_desktop_automation.egg-info/entry_points.txt
 src/vision_desktop_automation.egg-info/requires.txt
 src/vision_desktop_automation.egg-info/top_level.txt
 tests/test_grounding.py
+tests/test_notepad_windows.py
+tests/test_vlm_client.py

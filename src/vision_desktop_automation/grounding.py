@@ -1,5 +1,7 @@
 import logging
-from typing import Any
+import math
+from dataclasses import dataclass
+from typing import Any, Literal
 
 from PIL import Image
 
@@ -16,6 +18,7 @@ from vision_desktop_automation.config import (
     MIN_REGION_HEIGHT_PX,
     MIN_REGION_WIDTH_PX,
     PATCH_THRESHOLD_PX,
+    PLANNER_SEARCH_MODE,
     RECURSIVE_ACCEPT_CONFIDENCE,
     RECURSIVE_ACCEPT_SCORE,
     RECURSIVE_PLANNER_DEPTH,
@@ -26,6 +29,8 @@ from vision_desktop_automation.config import (
     USE_PLANNER_CANDIDATE_REGIONS,
     VERIFICATION_SKIP_CONFIDENCE,
     VERIFICATION_SKIP_REGION_SCORE,
+    CENTRALITY_SIGMA,
+    CENTRALITY_WEIGHT,
 )
 
 from vision_desktop_automation.geometry import (
@@ -37,6 +42,7 @@ from vision_desktop_automation.geometry import (
 from vision_desktop_automation.prompts import (
     GROUNDING_PROMPT,
     PLANNER_PROMPT,
+    PLANNER_PROMPT_ROBUST,
     VERIFY_PROMPT,
 )
 
@@ -46,10 +52,23 @@ from vision_desktop_automation.vlm_client import (
     recover_planner_regions_from_text,
 )
 
+VerifierResult = Literal["is_target", "target_elsewhere", "target_not_found"]
+
+@dataclass
+class VerificationOutcome:
+    result: VerifierResult
+    new_instruction: str | None
+    reason: str
+
+
 def propose_candidate_regions(screenshot: Image.Image, target_description: str) -> list[dict[str, Any]]:
-    prompt = PLANNER_PROMPT.format(
+    prompt_template = (
+        PLANNER_PROMPT_ROBUST if PLANNER_SEARCH_MODE == "robust" else PLANNER_PROMPT
+    )
+    max_regions = MAX_CANDIDATE_REGIONS if PLANNER_SEARCH_MODE == "robust" else 1
+    prompt = prompt_template.format(
         target_description=target_description,
-        max_regions=MAX_CANDIDATE_REGIONS,
+        max_regions=max_regions,
     )
     response = call_gemini_vision(prompt, screenshot)
     logging.info(f"Planner: {response}")
@@ -58,6 +77,12 @@ def propose_candidate_regions(screenshot: Image.Image, target_description: str) 
         data = parse_vlm_json(response)
     except ValueError:
         data = recover_planner_regions_from_text(response)
+
+    if not data.get("candidate_regions"):
+        try:
+            data = recover_planner_regions_from_text(response)
+        except ValueError:
+            pass
 
     raw_regions = data.get("candidate_regions", [])
     if not isinstance(raw_regions, list):
@@ -192,6 +217,40 @@ def nms_proposals(proposals: list[dict[str, Any]], iou_threshold: float = BOX_NM
     return kept
 
 
+def gaussian_centrality(
+    click_x_abs: int,
+    click_y_abs: int,
+    region: dict[str, Any],
+    sigma: float,
+) -> float:
+    """Compute the paper's centrality score for a grounded click point.
+
+    Returns a value in [0.0, 1.0] according to ScreenSeekeR Equations 1 and 2.
+    """
+    px1 = int(region.get("px1", 0))
+    py1 = int(region.get("py1", 0))
+    px2 = int(region.get("px2", 0))
+    py2 = int(region.get("py2", 0))
+
+    width = px2 - px1
+    height = py2 - py1
+    if width <= 0 or height <= 0:
+        return 0.0
+
+    x_rel = (click_x_abs - px1) / width
+    y_rel = (click_y_abs - py1) / height
+
+    if x_rel < 0.0 or x_rel > 1.0 or y_rel < 0.0 or y_rel > 1.0:
+        return 0.0
+
+    x_prime = x_rel
+    y_prime = y_rel
+    dx = x_prime - 0.5
+    dy = y_prime - 0.5
+    exponent = -((dx * dx) + (dy * dy)) / (2.0 * (sigma * sigma))
+    return float(math.exp(exponent))
+
+
 def parse_grounding_proposals(data: dict[str, Any]) -> list[dict[str, Any]]:
     """Parse Gemini grounding JSON into normalized proposal dictionaries."""
     raw_proposals = data.get("proposals", [])
@@ -261,7 +320,7 @@ def verify_icon_identity(
     x_pct: float,
     y_pct: float,
     target_description: str = "",
-) -> bool:
+) -> VerificationOutcome:
     try:
         img_w, img_h = screenshot.size
         cx = int(x_pct * img_w)
@@ -276,15 +335,69 @@ def verify_icon_identity(
         prompt = VERIFY_PROMPT.format(target_description=target_description)
         response = call_gemini_vision(prompt, crop)
         result = parse_vlm_json(response)
-        correct = result.get("correct", True)
-        if correct:
-            logging.info("Icon verified: correct target icon")
-        else:
-            logging.warning(f"Icon verification failed: {result.get('reason', 'unknown')}")
-        return bool(correct)
+
+        if not isinstance(result, dict):
+            logging.warning(
+                "Verifier returned non-dict response, defaulting to is_target"
+            )
+            return VerificationOutcome(
+                result="is_target",
+                new_instruction=None,
+                reason="verifier_unexpected_response",
+            )
+
+        raw_result = str(result.get("result", "")).strip()
+        if raw_result not in ("is_target", "target_elsewhere", "target_not_found"):
+            logging.warning(
+                f"Verifier returned invalid result '{raw_result}', defaulting to is_target"
+            )
+            return VerificationOutcome(
+                result="is_target",
+                new_instruction=None,
+                reason="verifier_invalid_result",
+            )
+
+        new_instruction = result.get("new_instruction")
+        reason = str(result.get("reason", "")).strip() or "no reason"
+
+        if raw_result == "target_elsewhere" and new_instruction is None:
+            logging.warning(
+                "Verifier returned target_elsewhere without new_instruction"
+            )
+
+        if raw_result == "is_target":
+            logging.info(f"Verifier: {raw_result} — {reason}")
+            return VerificationOutcome(
+                result="is_target",
+                new_instruction=None,
+                reason=reason,
+            )
+
+        if raw_result == "target_elsewhere":
+            logging.info(f"Verifier: {raw_result} — {reason}")
+            return VerificationOutcome(
+                result="target_elsewhere",
+                new_instruction=str(new_instruction)
+                if new_instruction is not None
+                else None,
+                reason=reason,
+            )
+
+        logging.info(f"Verifier: {raw_result} — {reason}")
+        return VerificationOutcome(
+            result="target_not_found",
+            new_instruction=None,
+            reason=reason,
+        )
     except Exception as e:
-        logging.warning(f"Icon verification failed unexpectedly: {e} — proceeding anyway")
-        return True
+        logging.warning(
+            f"Icon verification failed unexpectedly: {e} — proceeding anyway"
+        )
+        return VerificationOutcome(
+            result="is_target",
+            new_instruction=None,
+            reason="verifier_unavailable",
+        )
 
 
 def disambiguate_proposals(
@@ -313,20 +426,23 @@ def disambiguate_proposals(
         crop = image.crop((crop_x1, crop_y1, crop_x2, crop_y2))
 
         try:
-            response = call_gemini_vision(
-                VERIFY_PROMPT.format(target_description=target_description),
-                crop,
-            )
-            result = parse_vlm_json(response)
-            verified = bool(result.get("correct", False))
+            crop_width = crop_x2 - crop_x1
+            crop_height = crop_y2 - crop_y1
+            rel_x = (
+                proposal["click_x_pct"] * img_w - crop_x1
+            ) / crop_width
+            rel_y = (
+                proposal["click_y_pct"] * img_h - crop_y1
+            ) / crop_height
 
-            # Use confidence as tiebreaker if both verify
+            outcome = verify_icon_identity(crop, rel_x, rel_y, target_description)
+            verified = outcome.result == "is_target"
             score = proposal["proposal_score"] * (1.5 if verified else 0.5)
             scored.append((score, proposal))
             logging.info(
                 f"Disambiguation: proposal at "
                 f"({proposal['click_x_pct']:.2f},{proposal['click_y_pct']:.2f}) "
-                f"verified={verified}, adjusted_score={score:.3f}"
+                f"verifier={outcome.result}, adjusted_score={score:.3f}"
             )
         except Exception as e:
             logging.warning(f"Disambiguation verification failed: {e}")
@@ -449,15 +565,35 @@ def search_region_recursive(
             logging.info(
                 "Skipping verifier because planner and grounder are both highly confident"
             )
-            verified = True
+            outcome = VerificationOutcome(
+                result="is_target",
+                new_instruction=None,
+                reason="skip_verification",
+            )
         else:
-            verified = verify_icon_identity(screenshot, x_pct_full, y_pct_full, target_description)
+            outcome = verify_icon_identity(
+                screenshot,
+                x_pct_full,
+                y_pct_full,
+                target_description,
+            )
 
-        if verified:
+        if outcome.result == "is_target":
+            centrality = gaussian_centrality(
+                click_x_abs=x,
+                click_y_abs=y,
+                region=region,
+                sigma=CENTRALITY_SIGMA,
+            )
             combined_score = (
                 GROUNDING_CONFIDENCE_WEIGHT * conf
                 + REGION_SCORE_WEIGHT * float(region["score"])
                 + BOX_SCORE_WEIGHT * prop_score
+                + CENTRALITY_WEIGHT * centrality
+            )
+            logging.info(
+                f"Region {region['name']}: centrality={centrality:.3f}, "
+                f"combined_score={combined_score:.3f}"
             )
             results.append(
                 {
@@ -472,8 +608,127 @@ def search_region_recursive(
             )
             if combined_score >= RECURSIVE_ACCEPT_SCORE and conf >= RECURSIVE_ACCEPT_CONFIDENCE:
                 return results
+        elif outcome.result == "target_elsewhere":
+            logging.info(
+                f"Verifier says target is elsewhere: {outcome.reason}. "
+                f"Continuing to next candidate region."
+            )
+        else:  # target_not_found
+            logging.warning(
+                f"Verifier says target not found in region {region['name']}: "
+                f"{outcome.reason}. Skipping recursive subdivision."
+            )
+            return results
     except Exception as e:
         logging.warning(f"Direct grounding in region {region['name']} failed: {e}")
+
+        # Retry if the planner region is tight: a larger crop can preserve the
+        # icon label and surrounding context, which often helps the VLM.
+        padded_px1, padded_py1, padded_px2, padded_py2 = expand_region_pixels(
+            region["px1"],
+            region["py1"],
+            region["px2"],
+            region["py2"],
+            screenshot.width,
+            screenshot.height,
+            pad=120,
+        )
+        if (
+            padded_px1,
+            padded_py1,
+            padded_px2,
+            padded_py2,
+        ) != (region["px1"], region["py1"], region["px2"], region["py2"]):
+            try:
+                logging.info(f"Retrying direct grounding in padded region {region['name']}")
+                padded_region = dict(region)
+                padded_region["px1"] = padded_px1
+                padded_region["py1"] = padded_py1
+                padded_region["px2"] = padded_px2
+                padded_region["py2"] = padded_py2
+                padded_region["x1_pct"] = padded_px1 / screenshot.width
+                padded_region["y1_pct"] = padded_py1 / screenshot.height
+                padded_region["x2_pct"] = padded_px2 / screenshot.width
+                padded_region["y2_pct"] = padded_py2 / screenshot.height
+
+                x, y, conf, prop_score = vlm_ground_icon(
+                    crop_region(screenshot, padded_region),
+                    target_description,
+                    depth=0,
+                    offset_x=padded_region["px1"],
+                    offset_y=padded_region["py1"],
+                )
+                x_pct_full = x / screenshot.width
+                y_pct_full = y / screenshot.height
+
+                should_skip_verification = (
+                    SKIP_VERIFICATION_IF_CONFIDENT
+                    and conf >= VERIFICATION_SKIP_CONFIDENCE
+                    and float(region["score"]) >= VERIFICATION_SKIP_REGION_SCORE
+                )
+
+                if should_skip_verification:
+                    logging.info(
+                        "Skipping verifier because planner and grounder are both highly confident"
+                    )
+                    outcome = VerificationOutcome(
+                        result="is_target",
+                        new_instruction=None,
+                        reason="skip_verification",
+                    )
+                else:
+                    outcome = verify_icon_identity(
+                        screenshot,
+                        x_pct_full,
+                        y_pct_full,
+                        target_description,
+                    )
+
+                if outcome.result == "is_target":
+                    centrality = gaussian_centrality(
+                        click_x_abs=x,
+                        click_y_abs=y,
+                        region=padded_region,
+                        sigma=CENTRALITY_SIGMA,
+                    )
+                    combined_score = (
+                        GROUNDING_CONFIDENCE_WEIGHT * conf
+                        + REGION_SCORE_WEIGHT * float(region["score"])
+                        + BOX_SCORE_WEIGHT * prop_score
+                        + CENTRALITY_WEIGHT * centrality
+                    )
+                    logging.info(
+                        f"Region {padded_region['name']}: centrality={centrality:.3f}, "
+                        f"combined_score={combined_score:.3f}"
+                    )
+                    results.append(
+                        {
+                            "x": x,
+                            "y": y,
+                            "confidence": conf,
+                            "region_score": float(region["score"]),
+                            "combined_score": combined_score,
+                            "region_name": region["name"],
+                            "depth": depth,
+                        }
+                    )
+                    if combined_score >= RECURSIVE_ACCEPT_SCORE and conf >= RECURSIVE_ACCEPT_CONFIDENCE:
+                        return results
+                elif outcome.result == "target_elsewhere":
+                    logging.info(
+                        f"Verifier says target is elsewhere: {outcome.reason}. "
+                        f"Continuing to next candidate region."
+                    )
+                else:  # target_not_found
+                    logging.warning(
+                        f"Verifier says target not found in region {padded_region['name']}: "
+                        f"{outcome.reason}. Skipping recursive subdivision."
+                    )
+                    return results
+            except Exception as e2:
+                logging.warning(
+                    f"Padded region grounding also failed in {region['name']}: {e2}"
+                )
 
     # If uncertain, recursively ask the planner for subregions inside this crop.
     if depth >= RECURSIVE_PLANNER_DEPTH:

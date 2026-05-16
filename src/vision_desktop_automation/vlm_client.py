@@ -45,7 +45,7 @@ def _response_error_detail(response: requests.Response) -> str:
     return json.dumps(data, sort_keys=True)[:500]
 
 
-def image_to_base64(image: Image.Image, max_width: int = 1280) -> tuple[str, str]:
+def image_to_base64(image: Image.Image, max_width: int = 960) -> tuple[str, str]:
     """Convert a PIL image to base64 for Gemini Vision. Returns (data, mime_type).
 
     Small images (≤200px wide) are encoded as lossless PNG to avoid JPEG block
@@ -88,8 +88,10 @@ def call_gemini_vision(prompt: str, image: Image.Image) -> str:
             }
         ],
         "generationConfig": {
-            "maxOutputTokens": 1400,
-            "temperature": 0.1,
+            "maxOutputTokens": 3200,
+            "temperature": 0.0,
+            "topP": 1.0,
+            "responseMimeType": "application/json",
         },
     }
 
@@ -171,6 +173,22 @@ def parse_vlm_json(response_text: str) -> dict[str, Any]:
     if m:
         result["confidence"] = float(m.group(1))
 
+    m = re.search(r'"x1_pct"\s*:\s*([0-9.]+)', cleaned)
+    if m:
+        result["x1_pct"] = float(m.group(1))
+
+    m = re.search(r'"y1_pct"\s*:\s*([0-9.]+)', cleaned)
+    if m:
+        result["y1_pct"] = float(m.group(1))
+
+    m = re.search(r'"x2_pct"\s*:\s*([0-9.]+)', cleaned)
+    if m:
+        result["x2_pct"] = float(m.group(1))
+
+    m = re.search(r'"y2_pct"\s*:\s*([0-9.]+)', cleaned)
+    if m:
+        result["y2_pct"] = float(m.group(1))
+
     m = re.search(r'"click_x_pct"\s*:\s*([0-9.]+)', cleaned)
     if m:
         result["click_x_pct"] = float(m.group(1))
@@ -178,6 +196,29 @@ def parse_vlm_json(response_text: str) -> dict[str, Any]:
     m = re.search(r'"click_y_pct"\s*:\s*([0-9.]+)', cleaned)
     if m:
         result["click_y_pct"] = float(m.group(1))
+
+    m = re.search(r'"label_match"\s*:\s*([0-9.]+)', cleaned)
+    if m:
+        result["label_match"] = float(m.group(1))
+
+    m = re.search(r'"visual_match"\s*:\s*([0-9.]+)', cleaned)
+    if m:
+        result["visual_match"] = float(m.group(1))
+
+    m = re.search(r'"reason"\s*:\s*"([^"]*)"', cleaned)
+    if m:
+        result["reason"] = m.group(1)
+
+    if not ("click_x_pct" in result and "click_y_pct" in result) and "box" in cleaned:
+        box_match = re.search(
+            r'"box"\s*:\s*\{[^}]*"x1_pct"\s*:\s*([0-9.]+)[^}]*"y1_pct"\s*:\s*([0-9.]+)[^}]*"x2_pct"\s*:\s*([0-9.]+)[^}]*"y2_pct"\s*:\s*([0-9.]+)',
+            cleaned,
+        )
+        if box_match:
+            result["x1_pct"] = float(result.get("x1_pct", box_match.group(1)))
+            result["y1_pct"] = float(result.get("y1_pct", box_match.group(2)))
+            result["x2_pct"] = float(result.get("x2_pct", box_match.group(3)))
+            result["y2_pct"] = float(result.get("y2_pct", box_match.group(4)))
 
     if result:
         logging.warning(f"Recovered partial JSON: {result}")
@@ -246,7 +287,49 @@ def recover_planner_regions_from_text(text: str) -> dict[str, Any]:
             continue
 
     if not valid_regions:
+        partial = _recover_partial_planner_region(cleaned)
+        if partial is not None:
+            logging.warning(
+                "Recovered one planner region from partial/truncated JSON output"
+            )
+            return {"candidate_regions": [partial]}
         raise ValueError("Could not recover planner regions from partial JSON")
 
     logging.warning(f"Recovered {len(valid_regions)} planner region(s) from partial JSON")
     return {"candidate_regions": valid_regions}
+
+
+def _recover_partial_planner_region(text: str) -> dict[str, Any] | None:
+    """Recover a single candidate region from truncated planner output."""
+    fields: dict[str, str] = {}
+    patterns = {
+        "name": r'"name"\s*:\s*"([^"]*)"',
+        "reason": r'"reason"\s*:\s*"([^"]*)"',
+        "score": r'"score"\s*:\s*([0-9.]+)',
+        "x1_pct": r'"x1_pct"\s*:\s*([0-9.]+)',
+        "y1_pct": r'"y1_pct"\s*:\s*([0-9.]+)',
+        "x2_pct": r'"x2_pct"\s*:\s*([0-9.]+)',
+        "y2_pct": r'"y2_pct"\s*:\s*([0-9.]+)',
+    }
+
+    for key, pattern in patterns.items():
+        m = re.search(pattern, text)
+        if m:
+            fields[key] = m.group(1)
+
+    required = ["score", "x1_pct", "y1_pct", "x2_pct", "y2_pct"]
+    if not all(k in fields for k in required):
+        return None
+
+    try:
+        return {
+            "name": fields.get("name", "recovered_region"),
+            "reason": fields.get("reason", "recovered partial JSON")[:80],
+            "score": float(fields["score"]),
+            "x1_pct": float(fields["x1_pct"]),
+            "y1_pct": float(fields["y1_pct"]),
+            "x2_pct": float(fields["x2_pct"]),
+            "y2_pct": float(fields["y2_pct"]),
+        }
+    except Exception:
+        return None

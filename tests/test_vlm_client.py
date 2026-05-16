@@ -43,3 +43,28 @@ def test_call_gemini_vision_fails_fast_with_google_error_body(monkeypatch):
     assert post.call_count == 1
     vlm_client.time.sleep.assert_not_called()
 
+
+def test_parse_vlm_json_recovers_coordinates_from_partial_json():
+    text = '''```json
+    {
+      "found": true,
+      "confidence": 0.88,
+      "click_x_pct": 0.42,
+      "click_y_pct": 0.58,
+      "x1_pct": 0.36,
+      "y1_pct": 0.50,
+      "x2_pct": 0.48,
+      "y2_pct": 0.64
+    }
+    ```'''
+
+    parsed = vlm_client.parse_vlm_json(text)
+    assert parsed["found"] is True
+    assert parsed["confidence"] == pytest.approx(0.88)
+    assert parsed["click_x_pct"] == pytest.approx(0.42)
+    assert parsed["click_y_pct"] == pytest.approx(0.58)
+    assert parsed["x1_pct"] == pytest.approx(0.36)
+    assert parsed["y1_pct"] == pytest.approx(0.50)
+    assert parsed["x2_pct"] == pytest.approx(0.48)
+    assert parsed["y2_pct"] == pytest.approx(0.64)
+

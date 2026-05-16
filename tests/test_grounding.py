@@ -235,6 +235,34 @@ def test_propose_candidate_regions_parses_valid_json(fake_screenshot):
     assert scores == sorted(scores, reverse=True)
 
 
+def test_propose_candidate_regions_recovers_partial_planner_json(fake_screenshot):
+    """When parse_vlm_json returns no regions, malformed planner JSON should still
+    recover candidate regions from the raw response."""
+    response = '''```json
+    {
+      "candidate_regions": [
+        {
+          "name": "notepad_desktop_icon",
+          "reason": "Clearly visible Notepad shortcut icon on desktop.",
+          "score": 0.99,
+          "x1_pct": 0.346,
+          "y1_pct": 0.346,
+          "x2_pct": 0.395,
+          "y2_pct": 0.431
+        }
+      ]
+    }
+    ```'''
+
+    with patch("vision_desktop_automation.grounding.call_gemini_vision", return_value=response), \
+         patch("vision_desktop_automation.grounding.parse_vlm_json", return_value={"reason": "Clearly visible Notepad shortcut icon on desktop."}):
+        regions = propose_candidate_regions(fake_screenshot, "Test target")
+
+    assert len(regions) == 1
+    assert regions[0]["name"] == "notepad_desktop_icon"
+    assert regions[0]["score"] == pytest.approx(0.99)
+
+
 def test_propose_candidate_regions_filters_low_score_regions(fake_screenshot):
     """Regions below MIN_PLANNER_REGION_SCORE (0.50) must be dropped."""
     parsed = _planner_response([

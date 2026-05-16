@@ -24,7 +24,7 @@ from vision_desktop_automation.files import (
     setup_logging,
     verify_outputs,
 )
-from vision_desktop_automation.notepad import process_post
+from vision_desktop_automation.notepad import process_post_notepad, process_post_generic
 
 
 # =========================
@@ -63,6 +63,20 @@ Examples:
         default=None,
         help="Output directory path (default: Desktop/tjm-project)",
     )
+    parser.add_argument(
+        "--app",
+        type=str,
+        choices=["notepad", "generic"],
+        default=None,
+        help="Workflow type: 'notepad' for Notepad automation, 'generic' for just opening an app (default: notepad if --target not set, generic if --target is set)",
+    )
+    parser.add_argument(
+        "--search-mode",
+        type=str,
+        choices=["fast", "robust"],
+        default=None,
+        help="Planner search mode: 'fast' for the top candidate only, 'robust' for multiple plausible regions.",
+    )
     return parser.parse_args()
 
 
@@ -90,6 +104,9 @@ def main() -> None:
     if args.output_dir:
         cfg.OUTPUT_DIR = Path(args.output_dir).expanduser().resolve()
 
+    if args.search_mode:
+        cfg.PLANNER_SEARCH_MODE = args.search_mode
+
     setup_logging()
     ensure_runtime_dirs()
 
@@ -99,13 +116,38 @@ def main() -> None:
         logging.info(f"Posts limit override: {args.posts}")
     if args.output_dir:
         logging.info(f"Output directory override: {cfg.OUTPUT_DIR}")
+    if args.search_mode:
+        logging.info(f"Planner search mode override: {cfg.PLANNER_SEARCH_MODE}")
 
-    logging.info("Starting in 8 seconds — do not touch mouse or keyboard")
+    logging.info("Starting in 2 seconds — do not touch mouse or keyboard")
     logging.info(f"Target: {cfg.TARGET_DESCRIPTION}")
-    time.sleep(8)
+    time.sleep(2)
 
     try:
         validate_environment()
+    except Exception as e:
+        logging.exception(f"Startup failed: {e}")
+        return
+
+    # Determine which workflow to use
+    app_type = args.app
+    if app_type is None:
+        # Auto-detect based on whether --target was provided
+        app_type = "generic" if args.target else "notepad"
+
+    logging.info(f"Using workflow: {app_type}")
+
+    if app_type == "generic":
+        logging.info("Generic workflow selected — skipping post fetch")
+        try:
+            process_post_generic({"id": "generic"})
+            logging.info("Generic workflow completed successfully")
+        except Exception as e:
+            logging.exception(f"Generic workflow failed: {e}")
+            save_debug_screenshot("generic_fatal")
+        return
+
+    try:
         posts = fetch_posts()
     except Exception as e:
         logging.exception(f"Startup failed: {e}")
@@ -115,8 +157,14 @@ def main() -> None:
 
     for post in posts:
         try:
-            process_post(post)
+            if app_type == "notepad":
+                process_post_notepad(post)
+            else:  # generic
+                process_post_generic(post)
             logging.info("")
+        except pyautogui.FailSafeException:
+            logging.error("PyAutoGUI fail-safe triggered — terminating process immediately")
+            raise
         except Exception as e:
             logging.exception(f"Failed on post {post['id']}: {e}")
             save_debug_screenshot(f"fatal_post_{post['id']}")

@@ -19,7 +19,7 @@ OUTPUT_DIR = DESKTOP_PATH / "tjm-project"
 # =========================
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-VLM_MODEL = "gemini-flash-latest"
+VLM_MODEL = "gemini-2.5-flash"
 
 # =========================
 # GROUNDING HYPERPARAMETERS
@@ -35,10 +35,20 @@ USE_PLANNER_CANDIDATE_REGIONS = True
 MAX_CANDIDATE_REGIONS = 5
 MIN_REGION_WIDTH_PX = 80
 MIN_REGION_HEIGHT_PX = 80
+PLANNER_SEARCH_MODE = "fast"  # fast, robust
 
-REGION_SCORE_WEIGHT = 0.25
-GROUNDING_CONFIDENCE_WEIGHT = 0.55
-BOX_SCORE_WEIGHT = 0.20
+REGION_SCORE_WEIGHT = 0.20
+GROUNDING_CONFIDENCE_WEIGHT = 0.45
+BOX_SCORE_WEIGHT = 0.15
+
+# Gaussian centrality scoring from ScreenSeekeR paper (Equation 1).
+# σ controls the width of the centrality bell curve. The paper uses 0.3.
+# Smaller values penalize off-center boxes more aggressively.
+CENTRALITY_SIGMA = 0.3
+
+# Weight of the centrality term in the combined region score. Set to 0.0
+# to disable centrality and fall back to flat weighted scoring.
+CENTRALITY_WEIGHT = 0.20
 
 MAX_GROUNDING_PROPOSALS = 4
 REGION_NMS_IOU_THRESHOLD = 0.60
@@ -57,9 +67,9 @@ DISAMBIGUATION_MARGIN = 0.10
 # You said you fixed this, so keep it True.
 ALLOW_DIRECT_GROUNDING_FALLBACK = True
 
-SKIP_VERIFICATION_IF_CONFIDENT = True
-VERIFICATION_SKIP_CONFIDENCE = 0.97
-VERIFICATION_SKIP_REGION_SCORE = 0.90
+SKIP_VERIFICATION_IF_CONFIDENT = False
+VERIFICATION_SKIP_CONFIDENCE = 1.01
+VERIFICATION_SKIP_REGION_SCORE = 1.01
 
 # =========================
 # TEMPLATE MATCHING FALLBACK
