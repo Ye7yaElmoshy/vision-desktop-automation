@@ -89,7 +89,7 @@ def validate_environment() -> None:
     logging.info("Environment validated")
 
 
-def main() -> None:
+def main(force_app_type: str | None = None) -> None:
     args = parse_args()
 
     # Apply CLI overrides to config before anything else reads those values
@@ -129,8 +129,9 @@ def main() -> None:
         logging.exception(f"Startup failed: {e}")
         return
 
-    # Determine which workflow to use
-    app_type = args.app
+    # Determine which workflow to use.
+    # Priority: force_app_type (GUI launcher) > args.app (CLI --app flag) > auto-detect.
+    app_type = force_app_type if force_app_type is not None else args.app
     if app_type is None:
         # Auto-detect based on whether --target was provided
         app_type = "generic" if args.target else "notepad"

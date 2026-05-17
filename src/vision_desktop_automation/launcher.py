@@ -238,7 +238,9 @@ class LauncherApp:
             if posts_str:
                 cfg.POST_LIMIT = int(posts_str)
                 
-            cfg.PLANNER_SEARCH_MODE = self.mode_var.get()
+            mode = self.mode_var.get()
+            if mode in ("fast", "robust"):
+                cfg.PLANNER_SEARCH_MODE = mode
         except ImportError:
             messagebox.showerror(
                 "Import Error",
@@ -251,7 +253,8 @@ class LauncherApp:
         
         try:
             from vision_desktop_automation.main import main
-            main()
+            app_type_arg = "generic" if self.target_type_var.get() == "others" else "notepad"
+            main(force_app_type=app_type_arg)
         except ImportError:
             messagebox.showerror(
                 "Import Error",

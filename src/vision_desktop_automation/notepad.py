@@ -353,12 +353,13 @@ def open_notepad():
                         "launch validation will confirm result"
                     )
                 elif confidence < VERIFICATION_SKIP_CONFIDENCE:
-                    if not verify_icon_identity(
+                    outcome = verify_icon_identity(
                         pil_image,
                         x_shot / pil_image.width,
                         y_shot / pil_image.height,
                         cfg.TARGET_DESCRIPTION,
-                    ):
+                    )
+                    if outcome.result != "is_target":
                         raise ValueError("Wrong icon detected after planner-guided grounding")
                 else:
                     logging.info("Skipping outer icon verification due high grounding confidence")
