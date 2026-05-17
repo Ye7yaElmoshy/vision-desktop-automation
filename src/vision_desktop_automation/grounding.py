@@ -294,6 +294,13 @@ def parse_grounding_proposals(data: dict[str, Any]) -> list[dict[str, Any]]:
         if not (0.01 <= click_x <= 0.99 and 0.01 <= click_y <= 0.99):
             continue
 
+        # Gemini's click_x_pct/click_y_pct is unreliable — it sometimes
+        # drifts outside the visual icon even when the bounding box is
+        # correct. Use the box center as the click target instead; the
+        # box corners are empirically more accurate than the click point.
+        click_x = (x1 + x2) / 2
+        click_y = (y1 + y2) / 2
+
         confidence = normalize_pct(raw.get("confidence"), 0.0)
         label_match = normalize_pct(raw.get("label_match"), confidence)
         visual_match = normalize_pct(raw.get("visual_match"), confidence)
