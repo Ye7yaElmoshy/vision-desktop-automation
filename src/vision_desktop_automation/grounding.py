@@ -541,16 +541,44 @@ def search_region_recursive(
     verifies the best candidate, and recurses if confidence is still not strong enough.
     """
     results: list[dict[str, Any]] = []
-    crop = crop_region(screenshot, region)
 
-    # First try direct box grounding inside this region.
+    # expand_region_pixels clamps to screen bounds, so regions near the edge get
+    # asymmetric padding — the icon center may differ from the padded-box geometric
+    # center. Acceptable for now; proper fix is scoring centrality against the
+    # grounder's own bounding box (out of scope for this change).
+    padded_px1, padded_py1, padded_px2, padded_py2 = expand_region_pixels(
+        region["px1"],
+        region["py1"],
+        region["px2"],
+        region["py2"],
+        screenshot.width,
+        screenshot.height,
+    )
+    padded_region = dict(region)
+    padded_region["px1"] = padded_px1
+    padded_region["py1"] = padded_py1
+    padded_region["px2"] = padded_px2
+    padded_region["py2"] = padded_py2
+    padded_region["x1_pct"] = padded_px1 / screenshot.width
+    padded_region["y1_pct"] = padded_py1 / screenshot.height
+    padded_region["x2_pct"] = padded_px2 / screenshot.width
+    padded_region["y2_pct"] = padded_py2 / screenshot.height
+    logging.info(
+        f"Region {region['name']}: planner box "
+        f"{region['px2']-region['px1']}x{region['py2']-region['py1']}, "
+        f"padded to {padded_region['px2']-padded_region['px1']}x"
+        f"{padded_region['py2']-padded_region['py1']}"
+    )
+
+    crop = crop_region(screenshot, padded_region)
+
     try:
         x, y, conf, prop_score = vlm_ground_icon(
             crop,
             target_description,
             depth=0,
-            offset_x=region["px1"],
-            offset_y=region["py1"],
+            offset_x=padded_region["px1"],
+            offset_y=padded_region["py1"],
         )
         x_pct_full = x / screenshot.width
         y_pct_full = y / screenshot.height
@@ -582,7 +610,7 @@ def search_region_recursive(
             centrality = gaussian_centrality(
                 click_x_abs=x,
                 click_y_abs=y,
-                region=region,
+                region=padded_region,
                 sigma=CENTRALITY_SIGMA,
             )
             combined_score = (
@@ -622,114 +650,6 @@ def search_region_recursive(
     except Exception as e:
         logging.warning(f"Direct grounding in region {region['name']} failed: {e}")
 
-        # Retry if the planner region is tight: a larger crop can preserve the
-        # icon label and surrounding context, which often helps the VLM.
-        padded_px1, padded_py1, padded_px2, padded_py2 = expand_region_pixels(
-            region["px1"],
-            region["py1"],
-            region["px2"],
-            region["py2"],
-            screenshot.width,
-            screenshot.height,
-            pad=120,
-        )
-        if (
-            padded_px1,
-            padded_py1,
-            padded_px2,
-            padded_py2,
-        ) != (region["px1"], region["py1"], region["px2"], region["py2"]):
-            try:
-                logging.info(f"Retrying direct grounding in padded region {region['name']}")
-                padded_region = dict(region)
-                padded_region["px1"] = padded_px1
-                padded_region["py1"] = padded_py1
-                padded_region["px2"] = padded_px2
-                padded_region["py2"] = padded_py2
-                padded_region["x1_pct"] = padded_px1 / screenshot.width
-                padded_region["y1_pct"] = padded_py1 / screenshot.height
-                padded_region["x2_pct"] = padded_px2 / screenshot.width
-                padded_region["y2_pct"] = padded_py2 / screenshot.height
-
-                x, y, conf, prop_score = vlm_ground_icon(
-                    crop_region(screenshot, padded_region),
-                    target_description,
-                    depth=0,
-                    offset_x=padded_region["px1"],
-                    offset_y=padded_region["py1"],
-                )
-                x_pct_full = x / screenshot.width
-                y_pct_full = y / screenshot.height
-
-                should_skip_verification = (
-                    SKIP_VERIFICATION_IF_CONFIDENT
-                    and conf >= VERIFICATION_SKIP_CONFIDENCE
-                    and float(region["score"]) >= VERIFICATION_SKIP_REGION_SCORE
-                )
-
-                if should_skip_verification:
-                    logging.info(
-                        "Skipping verifier because planner and grounder are both highly confident"
-                    )
-                    outcome = VerificationOutcome(
-                        result="is_target",
-                        new_instruction=None,
-                        reason="skip_verification",
-                    )
-                else:
-                    outcome = verify_icon_identity(
-                        screenshot,
-                        x_pct_full,
-                        y_pct_full,
-                        target_description,
-                    )
-
-                if outcome.result == "is_target":
-                    centrality = gaussian_centrality(
-                        click_x_abs=x,
-                        click_y_abs=y,
-                        region=padded_region,
-                        sigma=CENTRALITY_SIGMA,
-                    )
-                    combined_score = (
-                        GROUNDING_CONFIDENCE_WEIGHT * conf
-                        + REGION_SCORE_WEIGHT * float(region["score"])
-                        + BOX_SCORE_WEIGHT * prop_score
-                        + CENTRALITY_WEIGHT * centrality
-                    )
-                    logging.info(
-                        f"Region {padded_region['name']}: centrality={centrality:.3f}, "
-                        f"combined_score={combined_score:.3f}"
-                    )
-                    results.append(
-                        {
-                            "x": x,
-                            "y": y,
-                            "confidence": conf,
-                            "region_score": float(region["score"]),
-                            "combined_score": combined_score,
-                            "region_name": region["name"],
-                            "depth": depth,
-                        }
-                    )
-                    if combined_score >= RECURSIVE_ACCEPT_SCORE and conf >= RECURSIVE_ACCEPT_CONFIDENCE:
-                        return results
-                elif outcome.result == "target_elsewhere":
-                    logging.info(
-                        f"Verifier says target is elsewhere: {outcome.reason}. "
-                        f"Continuing to next candidate region."
-                    )
-                else:  # target_not_found
-                    logging.warning(
-                        f"Verifier says target not found in region {padded_region['name']}: "
-                        f"{outcome.reason}. Skipping recursive subdivision."
-                    )
-                    return results
-            except Exception as e2:
-                logging.warning(
-                    f"Padded region grounding also failed in {region['name']}: {e2}"
-                )
-
     # If uncertain, recursively ask the planner for subregions inside this crop.
     if depth >= RECURSIVE_PLANNER_DEPTH:
         return results
@@ -744,10 +664,10 @@ def search_region_recursive(
         mapped = dict(sub)
         mapped["name"] = f"{region['name']} > {sub['name']}"
         mapped["score"] = float(region["score"]) * float(sub["score"])
-        mapped["px1"] = region["px1"] + sub["px1"]
-        mapped["py1"] = region["py1"] + sub["py1"]
-        mapped["px2"] = region["px1"] + sub["px2"]
-        mapped["py2"] = region["py1"] + sub["py2"]
+        mapped["px1"] = padded_region["px1"] + sub["px1"]
+        mapped["py1"] = padded_region["py1"] + sub["py1"]
+        mapped["px2"] = padded_region["px1"] + sub["px2"]
+        mapped["py2"] = padded_region["py1"] + sub["py2"]
         mapped["x1_pct"] = mapped["px1"] / screenshot.width
         mapped["y1_pct"] = mapped["py1"] / screenshot.height
         mapped["x2_pct"] = mapped["px2"] / screenshot.width
