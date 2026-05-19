@@ -208,7 +208,7 @@ def main(force_app_type: str | None = None) -> None:
                     "Cold start succeeded",
                     "Grounding worked; cache established for remaining posts.",
                 )
-                pyautogui.sleep(3);
+                #pyautogui.sleep(3);
                 first_post_done = True
         except pyautogui.FailSafeException:
             _handle_failsafe()
