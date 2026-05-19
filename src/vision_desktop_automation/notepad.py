@@ -44,6 +44,7 @@ from vision_desktop_automation.grounding import (
     planner_guided_ground_icon,
     verify_icon_identity,
 )
+from vision_desktop_automation.notifications import set_grounding_active
 
 from vision_desktop_automation.template_matching import template_match_icon
 
@@ -311,63 +312,68 @@ def open_notepad():
                     raise RuntimeError("Cache invalidated")
             else:
                 logging.info(f"Planner-guided VLM grounding attempt {attempt}")
-                ensure_desktop_clear()
-                time.sleep(0.5)
-
-                pil_image = pyautogui.screenshot()
-                pil_image.save(SCREENSHOT_PATH)
-
-                detection_method = "planner_guided_vlm"
-
+                set_grounding_active(True)
                 try:
-                    x_shot, y_shot, confidence = planner_guided_ground_icon(
-                        pil_image,
-                        cfg.TARGET_DESCRIPTION,
-                    )
-                except Exception as vlm_error:
-                    logging.warning(f"Planner-guided VLM grounding failed: {vlm_error}")
+                    ensure_desktop_clear()
+                    time.sleep(0.5)
 
-                    if not USE_TEMPLATE_MATCHING_FALLBACK:
-                        raise
+                    pil_image = pyautogui.screenshot()
+                    pil_image.save(SCREENSHOT_PATH)
 
-                    logging.info("Trying local template-matching fallback...")
-                    template_result = template_match_icon(pil_image)
+                    detection_method = "planner_guided_vlm"
 
-                    if template_result is None:
-                        raise RuntimeError(
-                            f"VLM grounding failed and template fallback found no reliable match. "
-                            f"Original VLM error: {vlm_error}"
+                    try:
+                        x_shot, y_shot, confidence = planner_guided_ground_icon(
+                            pil_image,
+                            cfg.TARGET_DESCRIPTION,
+                        )
+                    except Exception as vlm_error:
+                        logging.warning(f"Planner-guided VLM grounding failed: {vlm_error}")
+
+                        if not USE_TEMPLATE_MATCHING_FALLBACK:
+                            raise
+
+                        logging.info("Trying local template-matching fallback...")
+                        template_result = template_match_icon(pil_image)
+
+                        if template_result is None:
+                            raise RuntimeError(
+                                f"VLM grounding failed and template fallback found no reliable match. "
+                                f"Original VLM error: {vlm_error}"
+                            )
+
+                        x_shot, y_shot, confidence = template_result
+                        detection_method = "template_matching_fallback"
+
+                        logging.info(
+                            f"Template fallback selected candidate at "
+                            f"({x_shot},{y_shot}) with score={confidence:.3f}"
                         )
 
-                    x_shot, y_shot, confidence = template_result
-                    detection_method = "template_matching_fallback"
+                    if detection_method == "template_matching_fallback":
+                        logging.info(
+                            "Skipping VLM verifier for template fallback; "
+                            "launch validation will confirm result"
+                        )
+                    elif confidence < VERIFICATION_SKIP_CONFIDENCE:
+                        outcome = verify_icon_identity(
+                            pil_image,
+                            x_shot / pil_image.width,
+                            y_shot / pil_image.height,
+                            cfg.TARGET_DESCRIPTION,
+                        )
+                        if outcome.result != "is_target":
+                            raise ValueError("Wrong icon detected after planner-guided grounding")
+                    else:
+                        logging.info("Skipping outer icon verification due high grounding confidence")
+                    x = int(x_shot * scale_x)
+                    y = int(y_shot * scale_y)
+                    logging.info(f"Grounded: shot=({x_shot},{y_shot}) → screen=({x},{y})")
+                    save_annotated_screenshot(f"attempt_{attempt}", x, y, pil_image)
 
-                    logging.info(
-                        f"Template fallback selected candidate at "
-                        f"({x_shot},{y_shot}) with score={confidence:.3f}"
-                    )
-
-                if detection_method == "template_matching_fallback":
-                    logging.info(
-                        "Skipping VLM verifier for template fallback; "
-                        "launch validation will confirm result"
-                    )
-                elif confidence < VERIFICATION_SKIP_CONFIDENCE:
-                    if not verify_icon_identity(
-                        pil_image,
-                        x_shot / pil_image.width,
-                        y_shot / pil_image.height,
-                        cfg.TARGET_DESCRIPTION,
-                    ):
-                        raise ValueError("Wrong icon detected after planner-guided grounding")
-                else:
-                    logging.info("Skipping outer icon verification due high grounding confidence")
-                x = int(x_shot * scale_x)
-                y = int(y_shot * scale_y)
-                logging.info(f"Grounded: shot=({x_shot},{y_shot}) → screen=({x},{y})")
-                save_annotated_screenshot(f"attempt_{attempt}", x, y, pil_image)
-
-                update_icon_cache(x, y, scale_x, scale_y)
+                    update_icon_cache(x, y, scale_x, scale_y)
+                finally:
+                    set_grounding_active(False)
 
             logging.info(f"Double-clicking Notepad at ({x}, {y})")
             move_mouse_to_safe_position()
@@ -610,37 +616,41 @@ def process_post_generic(post: dict[str, Any]):
     for attempt in range(1, ICON_DETECTION_RETRIES + 1):
         try:
             logging.info(f"Finding and opening target app — attempt {attempt}")
-            ensure_desktop_clear()
-            time.sleep(0.5)
-
-            pil_image = pyautogui.screenshot()
-            pil_image.save(SCREENSHOT_PATH)
-
+            set_grounding_active(True)
             try:
-                x_shot, y_shot, confidence = planner_guided_ground_icon(
-                    pil_image,
-                    cfg.TARGET_DESCRIPTION,
-                )
-            except Exception as vlm_error:
-                logging.warning(f"VLM grounding failed: {vlm_error}")
+                ensure_desktop_clear()
+                time.sleep(0.5)
 
-                if not USE_TEMPLATE_MATCHING_FALLBACK:
-                    raise
+                pil_image = pyautogui.screenshot()
+                pil_image.save(SCREENSHOT_PATH)
 
-                logging.info("Trying local template-matching fallback...")
-                template_result = template_match_icon(pil_image)
-
-                if template_result is None:
-                    raise RuntimeError(
-                        f"VLM grounding failed and template fallback found no reliable match. "
-                        f"Original VLM error: {vlm_error}"
+                try:
+                    x_shot, y_shot, confidence = planner_guided_ground_icon(
+                        pil_image,
+                        cfg.TARGET_DESCRIPTION,
                     )
+                except Exception as vlm_error:
+                    logging.warning(f"VLM grounding failed: {vlm_error}")
 
-                x_shot, y_shot, confidence = template_result
-                logging.info(
-                    f"Template fallback selected candidate at "
-                    f"({x_shot},{y_shot}) with score={confidence:.3f}"
-                )
+                    if not USE_TEMPLATE_MATCHING_FALLBACK:
+                        raise
+
+                    logging.info("Trying local template-matching fallback...")
+                    template_result = template_match_icon(pil_image)
+
+                    if template_result is None:
+                        raise RuntimeError(
+                            f"VLM grounding failed and template fallback found no reliable match. "
+                            f"Original VLM error: {vlm_error}"
+                        )
+
+                    x_shot, y_shot, confidence = template_result
+                    logging.info(
+                        f"Template fallback selected candidate at "
+                        f"({x_shot},{y_shot}) with score={confidence:.3f}"
+                    )
+            finally:
+                set_grounding_active(False)
 
             x = int(x_shot * scale_x)
             y = int(y_shot * scale_y)
@@ -651,7 +661,6 @@ def process_post_generic(post: dict[str, Any]):
             move_mouse_to_safe_position()
             pyautogui.doubleClick(x, y, interval=0.2)
             move_mouse_to_safe_position()
-
             logging.info("Target app launched")
             time.sleep(2)
             logging.info(f"Finished post {post['id']}")

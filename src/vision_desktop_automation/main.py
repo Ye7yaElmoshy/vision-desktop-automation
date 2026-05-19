@@ -10,6 +10,7 @@ Important:
 
 import argparse
 import logging
+import sys
 import time
 from pathlib import Path
 
@@ -25,6 +26,7 @@ from vision_desktop_automation.files import (
     verify_outputs,
 )
 from vision_desktop_automation.notepad import process_post_notepad, process_post_generic
+from vision_desktop_automation.notifications import send_notification
 
 
 # =========================
@@ -32,6 +34,39 @@ from vision_desktop_automation.notepad import process_post_notepad, process_post
 # =========================
 pyautogui.FAILSAFE = True
 pyautogui.PAUSE = 0.15
+
+
+def _handle_failsafe() -> None:
+    """Show a blocking popup and exit when PyAutoGUI's fail-safe triggers."""
+    import tkinter as tk
+    from tkinter import messagebox
+
+    logging.error("PyAutoGUI fail-safe triggered — mouse moved to a screen corner")
+    send_notification(
+        "Failsafe Activated",
+        "Mouse moved to a screen corner. Program has been halted.",
+        is_error=True,
+    )
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+    messagebox.showerror(
+        "Failsafe Mechanism Activated",
+        "Failsafe mechanism is activated.\nProgram is halted.",
+        parent=root,
+    )
+    root.destroy()
+    sys.exit(1)
+
+
+def _is_critical_gemini_error(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return any(p in msg for p in (
+        "429", "resource_exhausted", "quota",
+        "403", "permission_denied", "access_denied",
+        "401", "invalid_api_key", "unauthenticated",
+        "503", "service_unavailable", "backend_error",
+    ))
 
 
 def parse_args() -> argparse.Namespace:
@@ -89,7 +124,7 @@ def validate_environment() -> None:
     logging.info("Environment validated")
 
 
-def main() -> None:
+def main(force_app_type: str | None = None) -> None:
     args = parse_args()
 
     # Apply CLI overrides to config before anything else reads those values
@@ -129,8 +164,9 @@ def main() -> None:
         logging.exception(f"Startup failed: {e}")
         return
 
-    # Determine which workflow to use
-    app_type = args.app
+    # Determine which workflow to use.
+    # Priority: force_app_type (GUI launcher) > args.app (CLI --app flag) > auto-detect.
+    app_type = force_app_type if force_app_type is not None else args.app
     if app_type is None:
         # Auto-detect based on whether --target was provided
         app_type = "generic" if args.target else "notepad"
@@ -142,9 +178,13 @@ def main() -> None:
         try:
             process_post_generic({"id": "generic"})
             logging.info("Generic workflow completed successfully")
+            send_notification("Launch Complete", "Target app opened successfully.")
+        except pyautogui.FailSafeException:
+            _handle_failsafe()
         except Exception as e:
             logging.exception(f"Generic workflow failed: {e}")
             save_debug_screenshot("generic_fatal")
+            send_notification("Launch Failed", f"{type(e).__name__}: {e}", is_error=True)
         return
 
     try:
@@ -154,6 +194,7 @@ def main() -> None:
         return
 
     failed_posts: list[int] = []
+    first_post_done = False
 
     for post in posts:
         try:
@@ -162,14 +203,25 @@ def main() -> None:
             else:  # generic
                 process_post_generic(post)
             logging.info("")
+            if not first_post_done and post["id"] == 1:
+                send_notification(
+                    "Cold start succeeded",
+                    "Grounding worked; cache established for remaining posts.",
+                )
+                pyautogui.sleep(3);
+                first_post_done = True
         except pyautogui.FailSafeException:
-            logging.error("PyAutoGUI fail-safe triggered — terminating process immediately")
-            raise
+            _handle_failsafe()
         except Exception as e:
             logging.exception(f"Failed on post {post['id']}: {e}")
             save_debug_screenshot(f"fatal_post_{post['id']}")
             failed_posts.append(post["id"])
-
+            if _is_critical_gemini_error(e):
+                send_notification(
+                    "Critical API Error",
+                    f"Post {post['id']}: {type(e).__name__}",
+                    is_error=True,
+                )
             try:
                 ensure_desktop_clear()
                 reset_ui_state()
@@ -182,6 +234,8 @@ def main() -> None:
     try:
         from vision_desktop_automation.notepad import close_all_notepad_windows
         close_all_notepad_windows()
+    except pyautogui.FailSafeException:
+        _handle_failsafe()
     except Exception as e:
         logging.warning(f"Final Notepad cleanup failed: {e}")
 
@@ -189,8 +243,17 @@ def main() -> None:
 
     if failed_posts:
         logging.warning(f"Failed posts: {failed_posts}")
+        send_notification(
+            "Automation Complete",
+            f"Done — {len(failed_posts)} post(s) failed.",
+            is_error=True,
+        ) 
     else:
         logging.info("All posts processed successfully")
+        send_notification(
+            "Automation Complete",
+            f"All {len(posts)} posts processed successfully.",
+        )
 
     verify_outputs(posts)
 
