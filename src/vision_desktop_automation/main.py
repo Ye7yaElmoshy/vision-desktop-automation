@@ -65,6 +65,7 @@ def _is_critical_gemini_error(exc: Exception) -> bool:
         "429", "resource_exhausted", "quota",
         "403", "permission_denied", "access_denied",
         "401", "invalid_api_key", "unauthenticated",
+        "503", "service_unavailable", "backend_error",
     ))
 
 
@@ -207,6 +208,7 @@ def main(force_app_type: str | None = None) -> None:
                     "Cold start succeeded",
                     "Grounding worked; cache established for remaining posts.",
                 )
+                pyautogui.sleep(3);
                 first_post_done = True
         except pyautogui.FailSafeException:
             _handle_failsafe()
@@ -245,7 +247,7 @@ def main(force_app_type: str | None = None) -> None:
             "Automation Complete",
             f"Done — {len(failed_posts)} post(s) failed.",
             is_error=True,
-        )
+        ) 
     else:
         logging.info("All posts processed successfully")
         send_notification(

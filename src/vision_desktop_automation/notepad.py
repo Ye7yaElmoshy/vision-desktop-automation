@@ -661,7 +661,6 @@ def process_post_generic(post: dict[str, Any]):
             move_mouse_to_safe_position()
             pyautogui.doubleClick(x, y, interval=0.2)
             move_mouse_to_safe_position()
-
             logging.info("Target app launched")
             time.sleep(2)
             logging.info(f"Finished post {post['id']}")

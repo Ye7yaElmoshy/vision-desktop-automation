@@ -54,6 +54,7 @@ def _send_windows_toast(title: str, message: str, is_error: bool) -> None:
         f"$t.SelectSingleNode('//text[@id=\"2\"]').InnerText = '{safe_message}'",
         "$n = [Windows.UI.Notifications.ToastNotification]::new($t)",
         "[Windows.UI.Notifications.ToastNotificationManager]::"
+        "$n.SuppressPopup = $true"
         "CreateToastNotifier('Vision Desktop Automation').Show($n)",
     ]
     subprocess.Popen(
