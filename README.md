@@ -148,6 +148,37 @@ The confidence weight dominates because Gemini's self-reported confidence is emp
 
 `search_region_recursive` ([grounding.py:539](src/vision_desktop_automation/grounding.py#L539)) handles the case where the planner's first split was wrong. If the verified candidate scores below the acceptance gate (`RECURSIVE_ACCEPT_SCORE = 0.82` and `RECURSIVE_ACCEPT_CONFIDENCE = 0.86`), the planner is re-invoked on the current crop to produce sub-regions, and each sub-region is searched in turn. Depth is bounded by `RECURSIVE_PLANNER_DEPTH = 2` so a failing case cannot fan out indefinitely. A high-confidence inner grounder result inside an asymmetrically-padded edge crop can still terminate early via `vlm_ground_icon`'s own depth-3 zoom loop.
 
+### Decision logic for one region
+
+The diagram below shows the inside of one `search_region_recursive` iteration: how a single region+padded-crop pair is taken through grounding, optional disambiguation, the skip-verify gate, the verifier outcome branch, scoring, and the acceptance gate that decides between accepting, recursing into subregions, or skipping the region entirely.
+
+```mermaid
+flowchart TD
+    A[Region and padded crop] --> B[Grounder returns proposals]
+    B --> C{Top 2 within<br/>DISAMBIGUATION_MARGIN = 0.10?}
+    C -->|Yes| D[Per-candidate verifier picks winner]
+    C -->|No| E{Skip verifier?<br/>conf >= 0.92 and<br/>region_score >= 0.85}
+    D --> E
+    E -->|Yes| H[combined_score = 0.45*conf +<br/>0.20*region + 0.15*proposal +<br/>0.20*centrality]
+    E -->|No| F[Verifier returns outcome]
+    F --> G{Outcome?}
+    G -->|is_target| H
+    G -->|target_elsewhere| K[Recurse into subregions, depth+1]
+    G -->|target_not_found| L[Skip region]
+    H --> I{combined >= 0.82<br/>and conf >= 0.86?}
+    I -->|Yes| J[Accept: return click point]
+    I -->|No| K
+
+    classDef acceptCls fill:#d4f4dd,stroke:#2a8a3e,color:#1a3a23
+    classDef recurseCls fill:#fde2c2,stroke:#c8761a,color:#4a2a07
+    classDef skipCls fill:#fad4d4,stroke:#a82a2a,color:#3a0a0a
+    class J acceptCls
+    class K recurseCls
+    class L skipCls
+```
+
+The disambiguation step at C fires inside `vlm_ground_icon` *before* the outer verifier; it is a per-proposal verifier pass that runs only when the top two grounder proposals are too close to rank by raw score. The skip-verify gate at E bypasses the outer verifier when both the planner's region score and the grounder's confidence are high enough that re-checking would not change the outcome.
+
 ### Cache as the fast path
 
 After the first successful detection, the system stores the absolute click coordinates and a small reference crop of the icon. On subsequent calls, `icon_still_at_cached_location` compares the live pixels at the cached coordinate against the reference using two pixel-diff thresholds (`CACHE_STRONG_DIFF_THRESHOLD = 50` for a confident match, `CACHE_TOLERANT_DIFF_THRESHOLD = 100` for a softer match). When the cache is valid, the entire planner → grounder → verifier chain is skipped — this is why a 10-post run uses one Gemini grounding call instead of ten. When the cache fails (icon moved, desktop background changed under it, theme switched), it is invalidated and the next call falls back to the full pipeline.
@@ -158,32 +189,26 @@ A single VLM call asking "where is icon X?" on a 1920×1080 desktop is unreliabl
 
 ### Flow diagram
 
-```
-                  +-----------+
-                  | screenshot|
-                  +-----+-----+
-                        |
-              cache hit  |  cache miss / cold
-              +----------+----------+
-              |                     |
-              v                     v
-        +-----+------+        +-----+-----+
-        |  cached    |        |  planner  | -> [region_1, ..., region_k]  (NMS, score >= 0.50)
-        | coordinates|        +-----+-----+
-        +-----+------+              |
-              |             for each region:
-              |          pad -> crop -> grounder -> verifier -> combined_score
-              |                  |          |          |             |
-              |        (low score)v          |          |         accept if
-              |          recurse plan        |          |         score >= 0.82
-              |          (depth < 2)         |          |         and conf >= 0.86
-              |                              |          |             |
-              +------------------------------+----------+-------------+
-                                                                      |
-                                                                      v
-                                                                +-----+-----+
-                                                                |   click   |
-                                                                +-----------+
+```mermaid
+flowchart TD
+    A[Capture screenshot] --> B{Cache valid?<br/>pixel diff < 50}
+    B -->|Yes| C[Use cached coords]
+    B -->|No| D[Planner proposes regions<br/>NMS, filter score >= 0.50]
+    D --> E[For each candidate region]
+
+    subgraph loop [Per-region search]
+      E --> F[Pad, crop, ground, verify]
+      F --> G[Compute combined_score]
+      G --> H{combined >= 0.82<br/>and conf >= 0.86?}
+      H -->|No| I[Recurse on subregions, depth+1]
+      I --> E
+    end
+
+    H -->|Yes| K[Translate to screen pixels]
+    E -->|All exhausted| J[Pick max combined_score]
+    J --> K
+    C --> K
+    K --> L[pyautogui.doubleClick]
 ```
 
 ### Hyperparameter reference
